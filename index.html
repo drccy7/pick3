@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Pick3 · 10초 맛집 결정기</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --surface: #181c24;
+      --surface-2: #222733;
+      --border: #2c3342;
+      --text: #f3f5f8;
+      --muted: #9aa3b2;
+      --accent: #ff6b35;
+      --accent-soft: rgba(255, 107, 53, 0.16);
+      --naver: #03c75a;
+      --kakao: #fee500;
+      --radius: 16px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Pretendard", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+      line-height: 1.45;
+      min-height: 100dvh;
+      display: flex;
+      justify-content: center;
+    }
+    .app {
+      width: 100%;
+      max-width: 440px;
+      padding: 20px 16px 40px;
+    }
+    header { margin-bottom: 18px; }
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      color: var(--accent);
+      background: var(--accent-soft);
+      padding: 4px 10px;
+      border-radius: 999px;
+      margin-bottom: 8px;
+    }
+    h1 { font-size: 23px; font-weight: 800; letter-spacing: -0.02em; }
+    .subtitle { color: var(--muted); font-size: 13px; margin-top: 4px; }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+      margin-bottom: 14px;
+    }
+    .label {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--muted);
+      margin-bottom: 8px;
+      display: block;
+    }
+    .input-row { display: flex; gap: 8px; }
+    input[type="text"] {
+      width: 100%;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 12px;
+      padding: 12px 14px;
+      font-size: 16px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    input[type="text"]:focus { border-color: var(--accent); }
+    input.area-input { width: 42%; font-size: 14px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .chip {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 7px 12px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .chip.active {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      color: #ffb195;
+    }
+    .situation-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .sit-btn {
+      background: var(--surface-2);
+      border: 1.5px solid var(--border);
+      border-radius: 14px;
+      color: var(--text);
+      padding: 12px 6px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.15s;
+    }
+    .sit-btn .emoji { font-size: 20px; }
+    .sit-btn.active {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      transform: translateY(-1px);
+    }
+    .meta-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+      color: var(--muted);
+      margin: 14px 2px 10px;
+    }
+    .badge-source {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+    }
+    .top-card {
+      background: linear-gradient(160deg, #211a18 0%, #181c24 65%);
+      border: 1.5px solid var(--accent);
+      border-radius: 18px;
+      padding: 16px;
+      margin-bottom: 12px;
+    }
+    .rank-pill {
+      display: inline-block;
+      background: var(--accent);
+      color: #fff;
+      font-size: 11px;
+      font-weight: 800;
+      padding: 3px 9px;
+      border-radius: 999px;
+      margin-bottom: 8px;
+    }
+    .place-name { font-size: 19px; font-weight: 800; letter-spacing: -0.01em; }
+    .place-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .reason {
+      margin-top: 10px;
+      font-size: 14px;
+      color: #f8fafc;
+      background: rgba(255, 255, 255, 0.04);
+      padding: 10px 12px;
+      border-radius: 10px;
+    }
+    .price-line { margin-top: 10px; font-size: 13px; font-weight: 700; color: #ffd166; }
+    .tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .tag {
+      font-size: 11px;
+      font-weight: 600;
+      color: #cbd5e1;
+      background: var(--surface-2);
+      padding: 4px 8px;
+      border-radius: 8px;
+    }
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 14px; }
+    .btn-map {
+      text-decoration: none;
+      text-align: center;
+      font-size: 13px;
+      font-weight: 800;
+      padding: 11px 10px;
+      border-radius: 11px;
+      display: block;
+    }
+    .btn-naver { background: var(--naver); color: #081c10; }
+    .btn-kakao { background: var(--kakao); color: #191919; }
+    .alt-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 15px;
+      padding: 14px;
+      margin-bottom: 10px;
+    }
+    .alt-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+    .alt-rank { font-size: 11px; font-weight: 800; color: var(--accent); }
+    .alt-name { font-size: 16px; font-weight: 800; margin-top: 2px; }
+    .share-btn {
+      width: 100%;
+      margin-top: 6px;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 13px;
+      border-radius: 12px;
+      font-size: 14px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .share-btn:active { opacity: 0.8; }
+    .error-box { color: #ff8a8a; font-size: 13px; margin-top: 8px; display: none; }
+    .empty-hint { text-align: center; color: var(--muted); font-size: 13px; padding: 28px 10px; }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <header>
+      <span class="brand">NO-LIST · PICK 3</span>
+      <h1>10초 맛집 결정기</h1>
+      <p class="subtitle">목록 20개 대신, 지금 상황에 딱 맞는 3곳만 고릅니다.</p>
+    </header>
+
+    <section class="card">
+      <label class="label" for="menuInput">1. 뭐 드실 건가요?</label>
+      <div class="input-row">
+        <input id="menuInput" type="text" placeholder="예: 돼지갈비" value="돼지갈비" />
+        <input id="areaInput" class="area-input" type="text" placeholder="동네 (선택)" />
+      </div>
+      <div class="chips" id="menuChips">
+        <button type="button" class="chip active" data-menu="돼지갈비">돼지갈비</button>
+        <button type="button" class="chip" data-menu="삼겹살">삼겹살</button>
+        <button type="button" class="chip" data-menu="국밥">국밥</button>
+        <button type="button" class="chip" data-menu="파스타">파스타</button>
+      </div>
+      <div id="errorBox" class="error-box"></div>
+    </section>
+
+    <section class="card">
+      <span class="label">2. 누구랑, 어떻게 드세요? (원탭 즉시 추천)</span>
+      <div class="situation-grid">
+        <button type="button" class="sit-btn active" data-sit="solo">
+          <span class="emoji">🍚</span>
+          <span>혼자 / 점심</span>
+        </button>
+        <button type="button" class="sit-btn" data-sit="date">
+          <span class="emoji">💑</span>
+          <span>둘이서 / 데이트</span>
+        </button>
+        <button type="button" class="sit-btn" data-sit="group">
+          <span class="emoji">🍻</span>
+          <span>여럿이 / 회식</span>
+        </button>
+      </div>
+    </section>
+
+    <section id="resultArea">
+      <div class="empty-hint">상황 버튼을 누르면 바로 3곳을 골라드립니다.</div>
+    </section>
+  </main>
+
+  <script>
+    const SITUATION_META = {
+      solo: { label: "혼자 / 점심", criteria: "1인 주문 가능 · 빠른 회전 · 웨이팅 최소" },
+      date: { label: "둘이서 / 데이트", criteria: "분위기 · 직원 구이/응대 · 대화하기 좋은 환경" },
+      group: { label: "여럿이 / 회식", criteria: "단체석/룸 · 주차/예약 · 예산 및 쉐어 효율" },
+    };
+
+    const STATIC_SAMPLE_DB = {
+      "돼지갈비": {
+        solo: [
+          { name: "명륜진사갈비 역삼점", category: "돼지갈비", area: "역삼/강남", reason: "1인분 주문 부담 없고 점심 시간대 웨이팅 거의 없음", price_note: "100g당 약 5,500원 (점심 특선 11,000원)", service_tags: ["혼밥 가능", "점심 특선", "빠른 회전"], open_status: "영업 상태 지도 확인" },
+          { name: "청기와타운 선릉점", category: "돼지갈비", area: "선릉", reason: "1인 정식 메뉴가 따로 있어 혼자서도 눈치 안 보고 식사 가능", price_note: "갈비 정식 13,000원", service_tags: ["1인 정식", "깔끔한 좌석", "역세권"], open_status: "영업 상태 지도 확인" },
+          { name: "돈수백 돼지갈비백반", category: "한식/갈비", area: "강남", reason: "구워져서 나오는 1인 갈비백반으로 15분 컷 점심 가능", price_note: "1인 백반 12,000원", service_tags: ["완조리 제공", "혼밥 특화", "옷 냄새 적음"], open_status: "영업 상태 지도 확인" }
+        ],
+        date: [
+          { name: "몽탄 성수직영점", category: "우대갈비/돼지갈비", area: "성수", reason: "직원이 처음부터 끝까지 구워줘서 대화에 집중하기 좋음", price_note: "100g당 약 9,200원", service_tags: ["직원 그릴링", "인테리어 우수", "연기 적음"], open_status: "영업 상태 지도 확인" },
+          { name: "화포식당 가로수길점", category: "숙성 돼지갈비", area: "신사", reason: "전 좌석 환기 덕트가 강하고 직원이 직접 컷팅까지 해줌", price_note: "100g당 약 8,500원", service_tags: ["직원 구이", "쾌적한 환기", "예약 가능"], open_status: "영업 상태 지도 확인" },
+          { name: "남영돈 숯불갈비", category: "참숯 돼지갈비", area: "숙대입구", reason: "초벌 후 테이블에서 마무리 구이해 주어 굽기 실패 없음", price_note: "100g당 약 7,800원", service_tags: ["초벌 제공", "분위기 좋음", "사이드 맛집"], open_status: "영업 상태 지도 확인" }
+        ],
+        group: [
+          { name: "강강술래 역삼점", category: "한돈 돼지갈비", area: "역삼", reason: "프라이빗 룸 완비 + 발렛 주차 가능해 6인 이상 회식에 최적", price_note: "100g당 약 7,500원", service_tags: ["단체 룸 완비", "주차/발렛", "직원 구이"], open_status: "영업 상태 지도 확인" },
+          { name: "송추가마골 인 어반", category: "갈비 전문", area: "광화문/종로", reason: "대형 홀과 12인석 룸 분리로 소음 걱정 없이 회식 진행", price_note: "100g당 약 8,200원", service_tags: ["대형 룸", "예약 확정", "넓은 테이블"], open_status: "영업 상태 지도 확인" },
+          { name: "마포진짜원조최대포", category: "돼지갈비", area: "공덕/마포", reason: "가성비 좋고 단체석 회전이 빨라 2차 이동까지 동선 편리", price_note: "100g당 약 5,500원", service_tags: ["가성비 1위", "단체석 다수", "참숯"], open_status: "영업 상태 지도 확인" }
+        ]
+      },
+      "삼겹살": {
+        solo: [
+          { name: "혼고집 1인 삼겹", category: "1인 고기", area: "강남", reason: "1인 전용 미니 불판으로 눈치 없이 삼겹살 1인분 가능", price_note: "1인 세트 13,900원", service_tags: ["1인 화로", "혼밥 1위", "공기밥 포함"], open_status: "영업 상태 지도 확인" },
+          { name: "싸움의고수", category: "보쌈/삼겹 도시락", area: "주요 역세권", reason: "1인 바 테이블 좌석 중심, 주문 후 5분 내 제공", price_note: "1인 정식 9,800원", service_tags: ["1인 좌석", "초고속 서빙", "가성비"], open_status: "영업 상태 지도 확인" },
+          { name: "고반식당", category: "숙성 삼겹", area: "역삼", reason: "비혼잡 시간대 1인 2인분 주문 시 직원이 직접 구워줌", price_note: "100g당 약 9,000원", service_tags: ["직원 구이", "김치찌개 서비스", "깔끔함"], open_status: "영업 상태 지도 확인" }
+        ],
+        date: [
+          { name: "금돼지식당", category: "본삼겹", area: "약수", reason: "전담 직원이 최적 온도로 구워주며 사이드 페어링이 훌륭함", price_note: "100g당 약 11,000원", service_tags: ["직원 그릴링", "미쉐린 빕구르망", "감성 외관"], open_status: "영업 상태 지도 확인" },
+          { name: "꿉당", category: "목살/삼겹", area: "신사/성수", reason: "고기를 직접 구울 필요 없고 코쿠미 밥 조합이 데이트에 인기", price_note: "100g당 약 10,500원", service_tags: ["풀 그릴링", "코쿠미 밥", "바 좌석"], open_status: "영업 상태 지도 확인" },
+          { name: "숙달돼지", category: "습식숙성 삼겹", area: "강남/홍대", reason: "와인 콜키지 가능하고 테이블 간격이 넓어 조용히 대화 가능", price_note: "100g당 약 9,500원", service_tags: ["직원 구이", "콜키지 가능", "구워먹는 치즈"], open_status: "영업 상태 지도 확인" }
+        ],
+        group: [
+          { name: "하남돼지집", category: "초벌 삼겹살", area: "주요 상권", reason: "초벌 후 직원이 빠르게 컷팅해줘서 다인원 회식 흐름이 안 끊김", price_note: "100g당 약 8,800원", service_tags: ["초벌+직원구이", "단체 예약", "넓은 홀"], open_status: "영업 상태 지도 확인" },
+          { name: "새마을식당", category: "열탄불고기/삼겹", area: "주요 상권", reason: "인원수 많아도 예산 부담 적고 7분돼지김치로 마무리가 깔끔", price_note: "100g당 약 6,500원", service_tags: ["가성비 회식", "넓은 좌석", "빠른 추가주문"], open_status: "영업 상태 지도 확인" },
+          { name: "도드람 본래", category: "한돈 삼겹", area: "방이/잠실", reason: "룸 좌석과 주차 공간이 넉넉해 팀 회식 예약에 안정적", price_note: "100g당 약 8,500원", service_tags: ["룸 보유", "주차 가능", "쾌적한 환기"], open_status: "영업 상태 지도 확인" }
+        ]
+      },
+      "국밥": {
+        solo: [
+          { name: "농민백암순대", category: "순대국밥", area: "선릉/강남", reason: "1인 회전이 매우 빠르고 잡내 없는 진한 국물로 혼밥 만족도 최상", price_note: "국밥 10,000원", service_tags: ["혼밥 성지", "빠른 회전", "진한 육수"], open_status: "영업 상태 지도 확인" },
+          { name: "옥동식", category: "돼지곰탕", area: "합정/서교", reason: "전 좌석 바 테이블 구조라 1인 방문이 기본인 깔끔한 식사", price_note: "보통 10,000원", service_tags: ["1인 바테이블", "맑은 국물", "미쉐린"], open_status: "영업 상태 지도 확인" },
+          { name: "광화문국밥", category: "돼지국밥", area: "시청/광화문", reason: "깔끔한 토렴식 국밥과 반찬 1인 세팅으로 점심 혼밥 최적", price_note: "국밥 9,500원", service_tags: ["깔끔한 1인상", "빠른 서빙", "조용함"], open_status: "영업 상태 지도 확인" }
+        ],
+        date: [
+          { name: "안암", category: "모던 돼지국밥", area: "안국", reason: "국밥집 같지 않은 세련된 공간과 수비드 고기 비주얼", price_note: "국밥 11,000원", service_tags: ["감성 인테리어", "깔끔한 맑은국", "데이트 OK"], open_status: "영업 상태 지도 확인" },
+          { name: "하동관", category: "한우 곰탕", area: "명동/여의도", reason: "오랜 전통의 깔끔한 맛으로 주말 낮 가벼운 데이트 코스에 적합", price_note: "보통 16,000원", service_tags: ["전통 노포", "깔끔한 맛", "빠른 식사"], open_status: "영업 상태 지도 확인" },
+          { name: "엄용백 돼지국밥", category: "부산식 돼지국밥", area: "인사동/종각", reason: "정갈한 트레이 세팅과 맑은/진한 육수 선택 가능", price_note: "국밥 11,000원", service_tags: ["정갈한 상차림", "육수 선택", "냄새 적음"], open_status: "영업 상태 지도 확인" }
+        ],
+        group: [
+          { name: "청진옥", category: "해장국/국밥", area: "종각", reason: "좌석 수가 많고 수육·모둠전과 함께 4~8인 식사 및 반주 가능", price_note: "해장국 12,000원", service_tags: ["대형 홀", "안주 메뉴", "아침/야간 가능"], open_status: "영업 상태 지도 확인" },
+          { name: "진주집", category: "꼬리곰탕/설렁탕", area: "남대문/여의도", reason: "어르신·직장인 모두 호불호 없는 메뉴와 넓은 테이블 보유", price_note: "설렁탕 12,000원", service_tags: ["호불호 없음", "단체 수용", "빠른 서빙"], open_status: "영업 상태 지도 확인" },
+          { name: "신의주찹쌀순대", category: "순대국/전골", area: "주요 상권", reason: "국밥과 순대곱창전골을 섞어 주문할 수 있어 다인원 식사에 유리", price_note: "국밥 10,000원", service_tags: ["전골+국밥", "넓은 좌석", "가성비"], open_status: "영업 상태 지도 확인" }
+        ]
+      },
+      "파스타": {
+        solo: [
+          { name: "롤링파스타", category: "캐주얼 파스타", area: "주요 역세권", reason: "1인 테이블 다수 + 가격 부담 없어 평일 점심 혼밥에 최적", price_note: "파스타 7,900~9,900원", service_tags: ["1만원 이하", "혼밥 환영", "빠른 조리"], open_status: "영업 상태 지도 확인" },
+          { name: "라구식당", category: "생면 라구 파스타", area: "안암/신촌", reason: "바 좌석이 있어 혼자 가도 자연스럽고 1인 세트 구성이 알참", price_note: "파스타 12,500원", service_tags: ["바 좌석", "가성비", "단일 인기메뉴"], open_status: "영업 상태 지도 확인" },
+          { name: "어거스트힐", category: "파스타/샐러드", area: "강남", reason: "조용한 창가 1인석에서 여유롭게 점심 식사 가능", price_note: "파스타 14,000원대", service_tags: ["창가 좌석", "조용함", "브레이크 확인"], open_status: "영업 상태 지도 확인" }
+        ],
+        date: [
+          { name: "도우룸", category: "생면 파스타", area: "서래마을", reason: "어두운 조명과 수준 높은 생면 파스타로 기념일·데이트 만족도 높음", price_note: "파스타 24,000~29,000원", service_tags: ["분위기 1위", "와인 페어링", "예약 권장"], open_status: "영업 상태 지도 확인" },
+          { name: "오스테리아 오르조", category: "이탈리안", area: "한남동", reason: "화이트 트러플 라구 파스타가 시그니처이며 서비스 응대가 섬세함", price_note: "파스타 25,000원대", service_tags: ["데이트 성지", "발렛 가능", "캐치테이블"], open_status: "영업 상태 지도 확인" },
+          { name: "바위파스타바", category: "파스타 오마카세/바", area: "성수", reason: "셰프 조리 과정을 바로 보며 대화할 수 있는 2인 바 좌석", price_note: "파스타 22,000원대", service_tags: ["오픈키친 바", "특별한 날", "사전 예약"], open_status: "영업 상태 지도 확인" }
+        ],
+        group: [
+          { name: "매드포갈릭", category: "이탈리안/스테이크", area: "주요 상권", reason: "6~10인 단체 테이블과 세트 할인이 잘 되어 있어 회식/모임 편리", price_note: "1인 약 25,000~35,000원", service_tags: ["대형 테이블", "주차 지원", "세트 할인"], open_status: "영업 상태 지도 확인" },
+          { name: "세상의모든아침", category: "브런치/파스타", area: "여의도/광교", reason: "넓은 홀과 뷰 덕분에 다인원 모임이나 팀 점심 회식에 적합", price_note: "파스타 22,000원대", service_tags: ["대형 홀", "예약 가능", "뷰 맛집"], open_status: "영업 상태 지도 확인" },
+          { name: "일프리모", category: "이탈리안 비스트로", area: "강남/선릉", reason: "파스타·리조또·피자를 쉐어하기 좋고 단체 룸 예약 가능", price_note: "파스타 18,000원대", service_tags: ["쉐어 메뉴", "단체석", "와인 가능"], open_status: "영업 상태 지도 확인" }
+        ]
+      }
+    };
+
+    const menuInput = document.getElementById("menuInput");
+    const areaInput = document.getElementById("areaInput");
+    const errorBox = document.getElementById("errorBox");
+    const resultArea = document.getElementById("resultArea");
+    const menuChips = document.querySelectorAll(".chip");
+    const sitButtons = document.querySelectorAll(".sit-btn");
+
+    let currentSituation = "solo";
+    let lastData = null;
+
+    function showError(msg) {
+      errorBox.textContent = msg;
+      errorBox.style.display = msg ? "block" : "none";
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
+
+    function buildMapUrls(name, area) {
+      const q = encodeURIComponent(`${area} ${name}`.trim());
+      return {
+        naver_map_url: `https://map.naver.com/p/search/${q}`,
+        kakao_map_url: `https://map.kakao.com/link/search/${q}`,
+      };
+    }
+
+    function getClientSideFallback(query, area, situation) {
+      const meta = SITUATION_META[situation];
+      const matchedKey = Object.keys(STATIC_SAMPLE_DB).find(
+        (k) => query.includes(k) || k.includes(query)
+      );
+
+      let picks;
+      let source;
+      if (matchedKey) {
+        picks = STATIC_SAMPLE_DB[matchedKey][situation].map((item) => {
+          const displayArea = area || item.area;
+          return { ...item, area: displayArea, ...buildMapUrls(item.name, displayArea) };
+        });
+        source = "curated_sample";
+      } else {
+        const areaLabel = area || "내 주변";
+        picks = [
+          { name: `${areaLabel} ${query} 가성비 1순위 후보`, category: query, area: areaLabel, reason: `'${meta.label}' 조건 기준으로 가격 대비 만족도가 높은 후보를 지도에서 확인하세요.`, price_note: "상세 가격 정보는 지도 링크에서 확인", service_tags: ["가성비 우선", meta.label, "지도 실리뷰 확인"], open_status: "실시간 영업 상태 지도 확인", ...buildMapUrls(`${areaLabel} ${query} 가성비`, "") },
+          { name: `${areaLabel} ${query} 평점/리뷰 상위 후보`, category: query, area: areaLabel, reason: "방문자 리뷰 수가 많고 실패 확률이 낮은 안정적 대안입니다.", price_note: "상세 가격 정보는 지도 링크에서 확인", service_tags: ["리뷰 검증", "대안 1", "영업시간 확인"], open_status: "실시간 영업 상태 지도 확인", ...buildMapUrls(`${areaLabel} ${query} 맛집`, "") },
+          { name: `${areaLabel} ${query} 쾌적/편의 우선 후보`, category: query, area: areaLabel, reason: "좌석 여유, 주차, 예약 가능 여부를 기준으로 비교할 수 있는 대안입니다.", price_note: "상세 가격 정보는 지도 링크에서 확인", service_tags: ["좌석/주차", "대안 2", "웨이팅 체크"], open_status: "실시간 영업 상태 지도 확인", ...buildMapUrls(`${areaLabel} ${query} 예약`, "") }
+        ];
+        source = "dynamic_map_search";
+      }
+
+      return {
+        query,
+        area: area || "내 주변",
+        situation,
+        situation_label: meta.label,
+        criteria: meta.criteria,
+        data_source: source,
+        top_pick: picks[0],
+        alternatives: picks.slice(1, 3),
+      };
+    }
+
+    async function fetchRecommendation() {
+      const query = menuInput.value.trim();
+      const area = areaInput.value.trim();
+      if (!query) {
+        showError("메뉴나 음식 이름을 입력해 주세요.");
+        return;
+      }
+      showError("");
+
+      // On GitHub Pages or static hosting, use client-side engine directly.
+      const isStaticHost = location.hostname.endsWith("github.io") || location.protocol === "file:";
+      if (!isStaticHost) {
+        try {
+          const res = await fetch("/api/recommend", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query, area, situation: currentSituation }),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            lastData = data;
+            renderResult(data);
+            return;
+          }
+        } catch {
+          // Fall back cleanly to client-side dataset if API is unavailable.
+        }
+      }
+
+      const data = getClientSideFallback(query, area, currentSituation);
+      lastData = data;
+      renderResult(data);
+    }
+
+    function renderTags(tags) {
+      return tags.map((t) => `<span class="tag">#${escapeHtml(t)}</span>`).join("");
+    }
+
+    function renderResult(data) {
+      const top = data.top_pick;
+      const alts = data.alternatives || [];
+      const sourceText =
+        data.data_source === "kakao_local_api"
+          ? "실시간 카카오 로컬"
+          : data.data_source === "curated_sample"
+          ? "큐레이션 샘플 데이터"
+          : "지도 실검색 가이드";
+
+      let html = `
+        <div class="meta-bar">
+          <span>기준: ${escapeHtml(data.criteria)}</span>
+          <span class="badge-source">${sourceText}</span>
+        </div>
+        <article class="top-card">
+          <span class="rank-pill">🥇 지금 바로 1순위</span>
+          <div class="place-name">${escapeHtml(top.name)}</div>
+          <div class="place-sub">${escapeHtml(top.category)} · ${escapeHtml(top.area)} · ${escapeHtml(top.open_status)}</div>
+          <div class="reason">${escapeHtml(top.reason)}</div>
+          <div class="price-line">💰 ${escapeHtml(top.price_note)}</div>
+          <div class="tags">${renderTags(top.service_tags)}</div>
+          <div class="actions">
+            <a class="btn-map btn-naver" href="${top.naver_map_url}" target="_blank" rel="noopener">네이버 지도</a>
+            <a class="btn-map btn-kakao" href="${top.kakao_map_url}" target="_blank" rel="noopener">카카오맵</a>
+          </div>
+        </article>
+      `;
+
+      alts.forEach((item, idx) => {
+        const medal = idx === 0 ? "🥈 대안 1" : "🥉 대안 2";
+        html += `
+          <article class="alt-card">
+            <div class="alt-head">
+              <span class="alt-rank">${medal}</span>
+              <span class="place-sub">${escapeHtml(item.area)}</span>
+            </div>
+            <div class="alt-name">${escapeHtml(item.name)}</div>
+            <div class="place-sub">${escapeHtml(item.price_note)}</div>
+            <div class="reason">${escapeHtml(item.reason)}</div>
+            <div class="tags">${renderTags(item.service_tags)}</div>
+            <div class="actions">
+              <a class="btn-map btn-naver" href="${item.naver_map_url}" target="_blank" rel="noopener">네이버 지도</a>
+              <a class="btn-map btn-kakao" href="${item.kakao_map_url}" target="_blank" rel="noopener">카카오맵</a>
+            </div>
+          </article>
+        `;
+      });
+
+      html += `<button type="button" class="share-btn" id="copyShareBtn">📋 카톡 공유용 3곳 요약 복사</button>`;
+      resultArea.innerHTML = html;
+
+      document.getElementById("copyShareBtn").addEventListener("click", copySummary);
+    }
+
+    async function copySummary() {
+      if (!lastData) return;
+      const lines = [
+        `[${lastData.area} ${lastData.query} · ${lastData.situation_label} 추천]`,
+        `1순위: ${lastData.top_pick.name} (${lastData.top_pick.price_note})`,
+        `👉 ${lastData.top_pick.reason}`,
+      ];
+      lastData.alternatives.forEach((a, i) => {
+        lines.push(`${i + 2}순위: ${a.name} - ${a.reason}`);
+      });
+      const text = lines.join("\n");
+      const btn = document.getElementById("copyShareBtn");
+      try {
+        await navigator.clipboard.writeText(text);
+        btn.textContent = "✅ 복사 완료! 카톡에 붙여넣기 하세요";
+        setTimeout(() => { btn.textContent = "📋 카톡 공유용 3곳 요약 복사"; }, 2000);
+      } catch {
+        btn.textContent = "복사 권한이 없어 직접 선택해 주세요";
+      }
+    }
+
+    menuChips.forEach((chip) => {
+      chip.addEventListener("click", () => {
+        menuChips.forEach((c) => c.classList.remove("active"));
+        chip.classList.add("active");
+        menuInput.value = chip.dataset.menu;
+        fetchRecommendation();
+      });
+    });
+
+    sitButtons.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        sitButtons.forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        currentSituation = btn.dataset.sit;
+        fetchRecommendation();
+      });
+    });
+
+    menuInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") fetchRecommendation();
+    });
+    areaInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") fetchRecommendation();
+    });
+
+    fetchRecommendation();
+  </script>
+</body>
+</html>

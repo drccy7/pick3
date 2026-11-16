@@ -49,7 +49,7 @@ class RecommendRequest(BaseModel):
 
 @app.get("/")
 async def index() -> FileResponse:
-    index_path = STATIC_DIR / "index.html"
+    index_path = BASE_DIR / "index.html"
     if not index_path.exists():
         raise HTTPException(status_code=404, detail="index.html not found")
     return FileResponse(str(index_path))
