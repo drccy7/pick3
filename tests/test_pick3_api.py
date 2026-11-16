@@ -89,3 +89,15 @@ def test_kakao_api_fallback_on_network_error(monkeypatch: pytest.MonkeyPatch) ->
     body = res.json()
     assert body["data_source"] == "curated_sample"
     assert len(body["alternatives"]) == 2
+
+
+def test_cors_allows_github_pages_origin() -> None:
+    res = client.options(
+        "/api/recommend",
+        headers={
+            "Origin": "https://drccy7.github.io",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+    assert res.status_code == 200
+    assert res.headers.get("access-control-allow-origin") == "https://drccy7.github.io"

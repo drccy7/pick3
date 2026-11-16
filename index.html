@@ -397,6 +397,21 @@
       };
     }
 
+    // Set your deployed Render/Railway backend URL here (or pass ?api=https://your-app.onrender.com)
+    const DEFAULT_API_BASE = "";
+
+    function resolveApiBase() {
+      const params = new URLSearchParams(location.search);
+      const fromQuery = params.get("api");
+      if (fromQuery) {
+        const cleaned = fromQuery.replace(/\/+$/, "");
+        localStorage.setItem("pick3_api_base", cleaned);
+        return cleaned;
+      }
+      if (DEFAULT_API_BASE) return DEFAULT_API_BASE.replace(/\/+$/, "");
+      return localStorage.getItem("pick3_api_base") || "";
+    }
+
     async function fetchRecommendation() {
       const query = menuInput.value.trim();
       const area = areaInput.value.trim();
@@ -406,11 +421,12 @@
       }
       showError("");
 
-      // On GitHub Pages or static hosting, use client-side engine directly.
+      const apiBase = resolveApiBase();
       const isStaticHost = location.hostname.endsWith("github.io") || location.protocol === "file:";
-      if (!isStaticHost) {
+      const shouldCallBackend = Boolean(apiBase) || !isStaticHost;
+      if (shouldCallBackend) {
         try {
-          const res = await fetch("/api/recommend", {
+          const res = await fetch(`${apiBase}/api/recommend`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ query, area, situation: currentSituation }),
