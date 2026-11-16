@@ -624,27 +624,39 @@ async def _fetch_google_places(
     if not places:
         return None
 
+    # Prefer places whose formattedAddress matches the requested area (prevents out-of-area
+    # restaurants with the area name in their title, e.g. "본강남갈비 인천논현본점").
+    area_tokens = [t for t in {area.strip(), area.strip().rstrip("역")} if t] if area else []
+    if area_tokens:
+        area_matched = [
+            p for p in places if any(tok in (p.get("formattedAddress") or "") for tok in area_tokens)
+        ]
+        if len(area_matched) >= 3:
+            places = area_matched
+
     # Prefer places with >= 10 reviews when at least 3 exist to avoid 1-review 5.0 outliers.
     reliable = [p for p in places if (p.get("userRatingCount") or 0) >= 10 and p.get("rating")]
     pool = reliable if len(reliable) >= 3 else [p for p in places if p.get("rating")] or places
 
     keywords = _SITUATION_KEYWORDS[situation]
-    scored: list[tuple[int, float, int, dict, list[str]]] = []
+    scored: list[tuple[int, int, float, int, dict, list[str]]] = []
     for p in pool:
+        addr_raw = p.get("formattedAddress") or ""
+        is_area_match = 1 if (not area_tokens or any(tok in addr_raw for tok in area_tokens)) else 0
         reviews_text = " ".join(
             (rv.get("text") or {}).get("text", "") for rv in p.get("reviews", [])
         )
         matched_kw = [kw for kw in keywords if kw in reviews_text]
         rating = float(p.get("rating") or 0.0)
         count = int(p.get("userRatingCount") or 0)
-        scored.append((len(matched_kw), rating, count, p, matched_kw))
+        scored.append((is_area_match, len(matched_kw), rating, count, p, matched_kw))
 
-    # Sort primarily by situation review match (>0 vs 0), then highest rating, then review count.
-    scored.sort(key=lambda item: (1 if item[0] > 0 else 0, item[1], item[2], item[0]), reverse=True)
+    # Sort by area match, then situation review match (>0 vs 0), then highest rating, then review count.
+    scored.sort(key=lambda item: (item[0], 1 if item[1] > 0 else 0, item[2], item[3], item[1]), reverse=True)
 
     sit_label = _SITUATION_META[situation]["label"]
     picks: list[RestaurantPick] = []
-    for _, rating, count, p, matched_kw in scored[:3]:
+    for _, _, rating, count, p, matched_kw in scored[:3]:
         name = (p.get("displayName") or {}).get("text") or "상호 미상"
         addr = p.get("formattedAddress") or area or "위치 확인"
         addr = addr.removeprefix("대한민국 ").strip()

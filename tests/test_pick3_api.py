@@ -181,3 +181,74 @@ def test_google_places_ranks_by_situation_and_rating(monkeypatch: pytest.MonkeyP
     assert body["top_pick"]["google_maps_url"] == "https://maps.google.com/?cid=3"
     assert [a["name"] for a in body["alternatives"]] == ["고평점 일반식당", "기본 갈비집"]
     assert providers.get_kakao_diag()["google_key_configured"] is True
+
+
+def test_google_places_filters_out_of_area_name_matches(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    class FakeResp:
+        status_code = 200
+        text = "ok"
+
+        def json(self) -> dict:
+            return {
+                "places": [
+                    {
+                        "displayName": {"text": "본강남갈비 인천논현본점"},
+                        "formattedAddress": "대한민국 인천광역시 남동구 논현동 1",
+                        "rating": 4.9,
+                        "userRatingCount": 200,
+                        "googleMapsUri": "https://maps.google.com/?cid=99",
+                        "reviews": [],
+                    },
+                    {
+                        "displayName": {"text": "강남 본점 1"},
+                        "formattedAddress": "대한민국 서울특별시 강남구 역삼동 10",
+                        "rating": 4.6,
+                        "userRatingCount": 100,
+                        "googleMapsUri": "https://maps.google.com/?cid=10",
+                        "reviews": [],
+                    },
+                    {
+                        "displayName": {"text": "강남 본점 2"},
+                        "formattedAddress": "대한민국 서울특별시 강남구 논현동 20",
+                        "rating": 4.5,
+                        "userRatingCount": 80,
+                        "googleMapsUri": "https://maps.google.com/?cid=20",
+                        "reviews": [],
+                    },
+                    {
+                        "displayName": {"text": "강남 본점 3"},
+                        "formattedAddress": "대한민국 서울특별시 강남구 대치동 30",
+                        "rating": 4.4,
+                        "userRatingCount": 60,
+                        "googleMapsUri": "https://maps.google.com/?cid=30",
+                        "reviews": [],
+                    },
+                ]
+            }
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            pass
+
+        async def post(self, *args, **kwargs):
+            return FakeResp()
+
+    monkeypatch.setenv("GOOGLE_PLACES_API_KEY", "fake_google_key")
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+    res = client.post(
+        "/api/recommend",
+        json={"query": "돼지갈비", "situation": "date", "area": "강남"},
+    )
+    assert res.status_code == 200
+    names = [res.json()["top_pick"]["name"]] + [a["name"] for a in res.json()["alternatives"]]
+    assert "본강남갈비 인천논현본점" not in names
+    assert names == ["강남 본점 1", "강남 본점 2", "강남 본점 3"]
