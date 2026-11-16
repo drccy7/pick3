@@ -11,6 +11,18 @@ import httpx
 
 SituationType = Literal["solo", "date", "group"]
 
+_LAST_KAKAO_DIAG: dict[str, object] = {"status": None, "error": None}
+
+
+def get_kakao_diag() -> dict[str, object]:
+    """Return non-secret Kakao Local API status diagnostics."""
+    key = os.getenv("KAKAO_REST_API_KEY", "").strip()
+    return {
+        "kakao_key_configured": bool(key),
+        "last_status": _LAST_KAKAO_DIAG["status"],
+        "last_error": _LAST_KAKAO_DIAG["error"],
+    }
+
 
 @dataclass(frozen=True)
 class RestaurantPick:
@@ -475,10 +487,15 @@ async def _fetch_kakao_local(
                 headers=headers,
                 params=params,
             )
+            _LAST_KAKAO_DIAG["status"] = resp.status_code
             if resp.status_code != 200:
+                _LAST_KAKAO_DIAG["error"] = resp.text[:200]
                 return None
+            _LAST_KAKAO_DIAG["error"] = None
             docs = resp.json().get("documents", [])
-    except Exception:
+    except Exception as exc:
+        _LAST_KAKAO_DIAG["status"] = -1
+        _LAST_KAKAO_DIAG["error"] = str(exc)[:200]
         return None
 
     if not docs:

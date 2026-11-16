@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 
-from providers import SituationType, get_recommendations
+from providers import SituationType, get_kakao_diag, get_recommendations
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -58,7 +58,7 @@ class RecommendRequest(BaseModel):
         return v.strip()[:40]
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 async def index() -> FileResponse:
     index_path = BASE_DIR / "index.html"
     if not index_path.exists():
@@ -68,7 +68,7 @@ async def index() -> FileResponse:
 
 @app.get("/api/health")
 async def health() -> dict:
-    return {"status": "ok", "service": "pick3"}
+    return {"status": "ok", "service": "pick3", **get_kakao_diag()}
 
 
 @app.get("/api/presets")
