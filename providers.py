@@ -12,13 +12,18 @@ import httpx
 SituationType = Literal["solo", "date", "group"]
 
 _LAST_KAKAO_DIAG: dict[str, object] = {"status": None, "error": None}
+_LAST_GOOGLE_DIAG: dict[str, object] = {"status": None, "error": None}
 
 
 def get_kakao_diag() -> dict[str, object]:
-    """Return non-secret Kakao Local API status diagnostics."""
-    key = os.getenv("KAKAO_REST_API_KEY", "").strip()
+    """Return non-secret external API status diagnostics."""
+    kakao_key = os.getenv("KAKAO_REST_API_KEY", "").strip()
+    google_key = os.getenv("GOOGLE_PLACES_API_KEY", "").strip()
     return {
-        "kakao_key_configured": bool(key),
+        "google_key_configured": bool(google_key),
+        "google_last_status": _LAST_GOOGLE_DIAG["status"],
+        "google_last_error": _LAST_GOOGLE_DIAG["error"],
+        "kakao_key_configured": bool(kakao_key),
         "last_status": _LAST_KAKAO_DIAG["status"],
         "last_error": _LAST_KAKAO_DIAG["error"],
     }
@@ -37,6 +42,9 @@ class RestaurantPick:
     open_status: str
     naver_map_url: str
     kakao_map_url: str
+    google_maps_url: str = ""
+    rating: float | None = None
+    review_count: int | None = None
     is_verified_detail: bool = True
 
     def to_dict(self) -> dict:
@@ -562,26 +570,154 @@ def _build_dynamic_fallback(
     return picks
 
 
+_SITUATION_KEYWORDS: dict[SituationType, list[str]] = {
+    "solo": ["혼자", "혼밥", "1인", "점심", "빠르", "간단", "바테이블", "바 좌석"],
+    "date": ["구워", "분위기", "데이트", "친절", "깔끔", "인테리어", "조용"],
+    "group": ["룸", "단체", "회식", "주차", "넓", "모임", "예약"],
+}
+
+_KAKAO_SITUATION_HINT: dict[SituationType, str] = {
+    "solo": "혼밥",
+    "date": "데이트",
+    "group": "룸",
+}
+
+
+async def _fetch_google_places(
+    query: str, area: str, situation: SituationType, api_key: str
+) -> list[RestaurantPick] | None:
+    """Query Google Places API (New) and rank by situation fit + rating + review count."""
+    text_query = f"{area} {query}".strip() if area else query
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": api_key,
+        "X-Goog-FieldMask": (
+            "places.displayName,places.formattedAddress,places.rating,"
+            "places.userRatingCount,places.googleMapsUri,"
+            "places.currentOpeningHours.openNow,places.reviews.text"
+        ),
+    }
+    body = {
+        "textQuery": text_query,
+        "languageCode": "ko",
+        "regionCode": "KR",
+        "maxResultCount": 12,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(
+                "https://places.googleapis.com/v1/places:searchText",
+                headers=headers,
+                json=body,
+            )
+            _LAST_GOOGLE_DIAG["status"] = resp.status_code
+            if resp.status_code != 200:
+                _LAST_GOOGLE_DIAG["error"] = resp.text[:200]
+                return None
+            _LAST_GOOGLE_DIAG["error"] = None
+            places = resp.json().get("places", [])
+    except Exception as exc:
+        _LAST_GOOGLE_DIAG["status"] = -1
+        _LAST_GOOGLE_DIAG["error"] = str(exc)[:200]
+        return None
+
+    if not places:
+        return None
+
+    # Prefer places with >= 10 reviews when at least 3 exist to avoid 1-review 5.0 outliers.
+    reliable = [p for p in places if (p.get("userRatingCount") or 0) >= 10 and p.get("rating")]
+    pool = reliable if len(reliable) >= 3 else [p for p in places if p.get("rating")] or places
+
+    keywords = _SITUATION_KEYWORDS[situation]
+    scored: list[tuple[int, float, int, dict, list[str]]] = []
+    for p in pool:
+        reviews_text = " ".join(
+            (rv.get("text") or {}).get("text", "") for rv in p.get("reviews", [])
+        )
+        matched_kw = [kw for kw in keywords if kw in reviews_text]
+        rating = float(p.get("rating") or 0.0)
+        count = int(p.get("userRatingCount") or 0)
+        scored.append((len(matched_kw), rating, count, p, matched_kw))
+
+    # Sort primarily by situation review match (>0 vs 0), then highest rating, then review count.
+    scored.sort(key=lambda item: (1 if item[0] > 0 else 0, item[1], item[2], item[0]), reverse=True)
+
+    sit_label = _SITUATION_META[situation]["label"]
+    picks: list[RestaurantPick] = []
+    for _, rating, count, p, matched_kw in scored[:3]:
+        name = (p.get("displayName") or {}).get("text") or "상호 미상"
+        addr = p.get("formattedAddress") or area or "위치 확인"
+        addr = addr.removeprefix("대한민국 ").strip()
+        open_now = (p.get("currentOpeningHours") or {}).get("openNow")
+        open_status = (
+            "현재 영업 중" if open_now is True else "현재 영업 종료" if open_now is False else "영업시간 지도 확인"
+        )
+        naver_url, kakao_url = _build_map_urls(name, area)
+        google_url = p.get("googleMapsUri") or ""
+
+        rating_str = f"⭐ {rating:.1f} (리뷰 {count:,}개)" if rating else "평점 정보 없음"
+        if matched_kw:
+            reason = f"구글 평점 {rating:.1f}({count:,}명) · 리뷰에 '{', '.join(matched_kw[:2])}' 언급 확인"
+        else:
+            reason = f"구글 평점 {rating:.1f}({count:,}명) · {sit_label} 기준 평점 상위 추천"
+
+        tags = [f"평점 {rating:.1f}" if rating else "구글 검색", f"리뷰 {count:,}", sit_label]
+        if matched_kw:
+            tags.append(f"#{matched_kw[0]} 언급")
+
+        picks.append(
+            RestaurantPick(
+                name=name,
+                category=query,
+                area=addr,
+                reason=reason,
+                price_note=rating_str,
+                service_tags=tags[:4],
+                open_status=open_status,
+                naver_map_url=naver_url,
+                kakao_map_url=kakao_url,
+                google_maps_url=google_url,
+                rating=rating or None,
+                review_count=count or None,
+                is_verified_detail=True,
+            )
+        )
+    return picks
+
+
 async def _fetch_kakao_local(
     query: str, area: str, situation: SituationType, api_key: str
 ) -> list[RestaurantPick] | None:
     """Query Kakao Local API when KAKAO_REST_API_KEY is configured."""
-    keyword = f"{area} {query}".strip() if area else query
+    base_kw = f"{area} {query}".strip() if area else query
+    hint = _KAKAO_SITUATION_HINT[situation]
     headers = {"Authorization": f"KakaoAK {api_key}"}
-    params = {"query": keyword, "category_group_code": "FD6", "size": 6}
+
+    docs: list[dict] = []
+    seen_ids: set[str] = set()
     try:
         async with httpx.AsyncClient(timeout=4.0) as client:
-            resp = await client.get(
-                "https://dapi.kakao.com/v2/local/search/keyword.json",
-                headers=headers,
-                params=params,
-            )
-            _LAST_KAKAO_DIAG["status"] = resp.status_code
-            if resp.status_code != 200:
-                _LAST_KAKAO_DIAG["error"] = resp.text[:200]
-                return None
-            _LAST_KAKAO_DIAG["error"] = None
-            docs = resp.json().get("documents", [])
+            # First try situation-boosted query, then fill from base query up to 3 unique places.
+            for kw in (f"{base_kw} {hint}", base_kw):
+                resp = await client.get(
+                    "https://dapi.kakao.com/v2/local/search/keyword.json",
+                    headers=headers,
+                    params={"query": kw, "category_group_code": "FD6", "size": 6},
+                )
+                _LAST_KAKAO_DIAG["status"] = resp.status_code
+                if resp.status_code != 200:
+                    _LAST_KAKAO_DIAG["error"] = resp.text[:200]
+                    return None
+                _LAST_KAKAO_DIAG["error"] = None
+                for item in resp.json().get("documents", []):
+                    pid = item.get("id") or item.get("place_name", "")
+                    if pid and pid not in seen_ids:
+                        seen_ids.add(pid)
+                        docs.append(item)
+                    if len(docs) >= 3:
+                        break
+                if len(docs) >= 3:
+                    break
     except Exception as exc:
         _LAST_KAKAO_DIAG["status"] = -1
         _LAST_KAKAO_DIAG["error"] = str(exc)[:200]
@@ -603,8 +739,8 @@ async def _fetch_kakao_local(
                 name=name,
                 category=cat,
                 area=addr,
-                reason=f"카카오 로컬 검색 상위 매칭 ({sit_label} 기준 세부 조건은 지도 리뷰 확인)",
-                price_note="메뉴/100g 가격은 지도 상세 확인",
+                reason=f"카카오 로컬 '{hint}' 키워드·정확도 상위 매칭 ({sit_label})",
+                price_note="메뉴/평점은 지도 상세 확인",
                 service_tags=[cat, sit_label, "실시간 검색 결과"],
                 open_status="영업시간 지도 확인",
                 naver_map_url=naver_url,
@@ -622,7 +758,23 @@ async def get_recommendations(
     clean_query = query.strip()
     clean_area = area.strip()
 
-    # 1. Optional live Kakao Local API if configured
+    # 1. Google Places API (rating + review count + openNow + review keyword fit)
+    google_key = os.getenv("GOOGLE_PLACES_API_KEY", "").strip()
+    if google_key:
+        google_picks = await _fetch_google_places(clean_query, clean_area, situation, google_key)
+        if google_picks:
+            return {
+                "query": clean_query,
+                "area": clean_area or "내 주변",
+                "situation": situation,
+                "situation_label": _SITUATION_META[situation]["label"],
+                "criteria": f"{_SITUATION_META[situation]['criteria']} · 구글 평점순",
+                "data_source": "google_places_api",
+                "top_pick": google_picks[0].to_dict(),
+                "alternatives": [p.to_dict() for p in google_picks[1:3]],
+            }
+
+    # 2. Optional live Kakao Local API if configured
     kakao_key = os.getenv("KAKAO_REST_API_KEY", "").strip()
     if kakao_key:
         live_picks = await _fetch_kakao_local(clean_query, clean_area, situation, kakao_key)

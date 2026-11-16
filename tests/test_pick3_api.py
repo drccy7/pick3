@@ -101,3 +101,83 @@ def test_cors_allows_github_pages_origin() -> None:
     )
     assert res.status_code == 200
     assert res.headers.get("access-control-allow-origin") == "https://drccy7.github.io"
+
+
+def test_google_places_ranks_by_situation_and_rating(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+    import providers
+
+    class FakeResp:
+        status_code = 200
+        text = "ok"
+
+        def json(self) -> dict:
+            return {
+                "places": [
+                    {
+                        "displayName": {"text": "신규 1리뷰 식당"},
+                        "formattedAddress": "대한민국 서울 강남구 역삼동 1",
+                        "rating": 5.0,
+                        "userRatingCount": 1,
+                        "googleMapsUri": "https://maps.google.com/?cid=1",
+                        "currentOpeningHours": {"openNow": True},
+                        "reviews": [],
+                    },
+                    {
+                        "displayName": {"text": "고평점 일반식당"},
+                        "formattedAddress": "대한민국 서울 강남구 역삼동 2",
+                        "rating": 4.8,
+                        "userRatingCount": 200,
+                        "googleMapsUri": "https://maps.google.com/?cid=2",
+                        "currentOpeningHours": {"openNow": True},
+                        "reviews": [{"text": {"text": "맛있어요"}}],
+                    },
+                    {
+                        "displayName": {"text": "룸 완비 회식갈비"},
+                        "formattedAddress": "대한민국 서울 강남구 역삼동 3",
+                        "rating": 4.6,
+                        "userRatingCount": 500,
+                        "googleMapsUri": "https://maps.google.com/?cid=3",
+                        "currentOpeningHours": {"openNow": False},
+                        "reviews": [{"text": {"text": "단체 회식하기 좋고 룸이 넓어요"}}],
+                    },
+                    {
+                        "displayName": {"text": "기본 갈비집"},
+                        "formattedAddress": "대한민국 서울 강남구 역삼동 4",
+                        "rating": 4.5,
+                        "userRatingCount": 300,
+                        "googleMapsUri": "https://maps.google.com/?cid=4",
+                        "reviews": [],
+                    },
+                ]
+            }
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            pass
+
+        async def post(self, *args, **kwargs):
+            return FakeResp()
+
+    monkeypatch.setenv("GOOGLE_PLACES_API_KEY", "fake_google_key")
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+    res = client.post(
+        "/api/recommend",
+        json={"query": "돼지갈비", "situation": "group", "area": "강남"},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["data_source"] == "google_places_api"
+    # Situation-matched ("룸", "회식") place ranks 1st, 1-review 5.0 outlier is excluded
+    assert body["top_pick"]["name"] == "룸 완비 회식갈비"
+    assert body["top_pick"]["open_status"] == "현재 영업 종료"
+    assert body["top_pick"]["google_maps_url"] == "https://maps.google.com/?cid=3"
+    assert [a["name"] for a in body["alternatives"]] == ["고평점 일반식당", "기본 갈비집"]
+    assert providers.get_kakao_diag()["google_key_configured"] is True

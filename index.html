@@ -205,6 +205,7 @@
     }
     .btn-naver { background: var(--naver); color: #081c10; }
     .btn-kakao { background: var(--kakao); color: #191919; }
+    .btn-google { background: #3b82f6; color: #fff; }
     .alt-card {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -492,11 +493,27 @@
       return tags.map((t) => `<span class="tag">#${escapeHtml(t)}</span>`).join("");
     }
 
+    function renderMapButtons(item) {
+      const cols = item.google_maps_url ? "1fr 1fr 1fr" : "1fr 1fr";
+      const gBtn = item.google_maps_url
+        ? `<a class="btn-map btn-google" href="${item.google_maps_url}" target="_blank" rel="noopener">구글 지도</a>`
+        : "";
+      return `
+        <div class="actions" style="grid-template-columns:${cols}">
+          <a class="btn-map btn-naver" href="${item.naver_map_url}" target="_blank" rel="noopener">네이버 지도</a>
+          <a class="btn-map btn-kakao" href="${item.kakao_map_url}" target="_blank" rel="noopener">카카오맵</a>
+          ${gBtn}
+        </div>
+      `;
+    }
+
     function renderResult(data) {
       const top = data.top_pick;
       const alts = data.alternatives || [];
       const sourceText =
-        data.data_source === "kakao_local_api"
+        data.data_source === "google_places_api"
+          ? "실시간 구글 평점순"
+          : data.data_source === "kakao_local_api"
           ? "실시간 카카오 로컬"
           : data.data_source === "curated_sample"
           ? "큐레이션 샘플 데이터"
@@ -514,10 +531,7 @@
           <div class="reason">${escapeHtml(top.reason)}</div>
           <div class="price-line">💰 ${escapeHtml(top.price_note)}</div>
           <div class="tags">${renderTags(top.service_tags)}</div>
-          <div class="actions">
-            <a class="btn-map btn-naver" href="${top.naver_map_url}" target="_blank" rel="noopener">네이버 지도</a>
-            <a class="btn-map btn-kakao" href="${top.kakao_map_url}" target="_blank" rel="noopener">카카오맵</a>
-          </div>
+          ${renderMapButtons(top)}
         </article>
       `;
 
@@ -533,10 +547,7 @@
             <div class="place-sub">${escapeHtml(item.price_note)}</div>
             <div class="reason">${escapeHtml(item.reason)}</div>
             <div class="tags">${renderTags(item.service_tags)}</div>
-            <div class="actions">
-              <a class="btn-map btn-naver" href="${item.naver_map_url}" target="_blank" rel="noopener">네이버 지도</a>
-              <a class="btn-map btn-kakao" href="${item.kakao_map_url}" target="_blank" rel="noopener">카카오맵</a>
-            </div>
+            ${renderMapButtons(item)}
           </article>
         `;
       });

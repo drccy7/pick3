@@ -8,3 +8,5 @@ services:
     envVars:
       - key: KAKAO_REST_API_KEY
         sync: false
+      - key: GOOGLE_PLACES_API_KEY
+        sync: false
