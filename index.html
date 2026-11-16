@@ -70,13 +70,25 @@
       border: 1px solid var(--border);
       color: var(--text);
       border-radius: 12px;
-      padding: 12px 14px;
-      font-size: 16px;
+      padding: 12px 12px;
+      font-size: 15px;
       outline: none;
       transition: border-color 0.15s;
     }
     input[type="text"]:focus { border-color: var(--accent); }
-    input.area-input { width: 42%; font-size: 14px; }
+    input.area-input { width: 34%; font-size: 14px; flex-shrink: 0; }
+    .go-btn {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 12px;
+      padding: 0 14px;
+      font-size: 14px;
+      font-weight: 800;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .go-btn:active { opacity: 0.85; }
     .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
     .chip {
       background: var(--surface-2);
@@ -87,11 +99,23 @@
       font-size: 13px;
       font-weight: 600;
       cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
     }
     .chip.active {
       border-color: var(--accent);
       background: var(--accent-soft);
       color: #ffb195;
+    }
+    .chip-add {
+      border-style: dashed;
+      color: var(--muted);
+    }
+    .chip-del {
+      font-size: 12px;
+      color: var(--muted);
+      padding: 0 2px;
     }
     .situation-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
     .sit-btn {
@@ -148,6 +172,8 @@
       margin-bottom: 8px;
     }
     .place-name { font-size: 19px; font-weight: 800; letter-spacing: -0.01em; }
+    .place-link { color: inherit; text-decoration: none; border-bottom: 1px dashed rgba(255,255,255,0.28); }
+    .place-link:hover { color: var(--accent); }
     .place-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
     .reason {
       margin-top: 10px;
@@ -217,15 +243,11 @@
     <section class="card">
       <label class="label" for="menuInput">1. 뭐 드실 건가요?</label>
       <div class="input-row">
-        <input id="menuInput" type="text" placeholder="예: 돼지갈비" value="돼지갈비" />
+        <input id="menuInput" type="text" placeholder="예: 돼지갈비, 소바" value="돼지갈비" />
         <input id="areaInput" class="area-input" type="text" placeholder="동네 (선택)" />
+        <button type="button" class="go-btn" id="searchBtn">찾기</button>
       </div>
-      <div class="chips" id="menuChips">
-        <button type="button" class="chip active" data-menu="돼지갈비">돼지갈비</button>
-        <button type="button" class="chip" data-menu="삼겹살">삼겹살</button>
-        <button type="button" class="chip" data-menu="국밥">국밥</button>
-        <button type="button" class="chip" data-menu="파스타">파스타</button>
-      </div>
+      <div class="chips" id="menuChips"></div>
       <div id="errorBox" class="error-box"></div>
     </section>
 
@@ -327,14 +349,33 @@
           { name: "세상의모든아침", category: "브런치/파스타", area: "여의도/광교", reason: "넓은 홀과 뷰 덕분에 다인원 모임이나 팀 점심 회식에 적합", price_note: "파스타 22,000원대", service_tags: ["대형 홀", "예약 가능", "뷰 맛집"], open_status: "영업 상태 지도 확인" },
           { name: "일프리모", category: "이탈리안 비스트로", area: "강남/선릉", reason: "파스타·리조또·피자를 쉐어하기 좋고 단체 룸 예약 가능", price_note: "파스타 18,000원대", service_tags: ["쉐어 메뉴", "단체석", "와인 가능"], open_status: "영업 상태 지도 확인" }
         ]
+      },
+      "소바": {
+        solo: [
+          { name: "미진 광화문본점", category: "메밀소바", area: "광화문/종각", reason: "회전이 빠르고 1인 판모밀 주문이 기본이라 점심 혼밥에 최적", price_note: "냉메밀 11,000원", service_tags: ["혼밥 환영", "빠른 회전", "노포 맛집"], open_status: "영업 상태 지도 확인" },
+          { name: "송옥 남대문본점", category: "판모밀/우동", area: "시청/북창동", reason: "혼자 방문하는 직장인이 많고 주문 후 빠르게 제공됨", price_note: "판모밀 10,000원", service_tags: ["직장인 점심", "1인 테이블", "가성비"], open_status: "영업 상태 지도 확인" },
+          { name: "오비야 강남점", category: "자가제면 소바", area: "강남/역삼", reason: "바 좌석이 있어 혼자 조용히 자가제면 소바를 즐기기 좋음", price_note: "자루소바 11,000원", service_tags: ["바 좌석", "자가제면", "깔끔함"], open_status: "영업 상태 지도 확인" }
+        ],
+        date: [
+          { name: "스바루", category: "수타 소바", area: "이수/방배", reason: "차분한 일식 공간에서 수준 높은 수타 소바와 튀김을 함께 즐기기 좋음", price_note: "자루소바 13,000원", service_tags: ["수타면", "조용한 분위기", "튀김 추천"], open_status: "영업 상태 지도 확인" },
+          { name: "미타니야", category: "일식/소바", area: "동부이촌/여의도", reason: "정갈한 상차림과 깔끔한 좌석 간격으로 대화하기 편함", price_note: "소바 정식 16,000원대", service_tags: ["정갈한 정식", "데이트 OK", "단정한 공간"], open_status: "영업 상태 지도 확인" },
+          { name: "소바야 린", category: "일식 소바", area: "서래마을/반포", reason: "깔끔한 플레이팅과 다양한 토핑 소바로 취향 맞춰 주문 가능", price_note: "냉소바 13,000원대", service_tags: ["분위기 좋음", "깔끔한 육수", "사이드 다양"], open_status: "영업 상태 지도 확인" }
+        ],
+        group: [
+          { name: "메밀공방", category: "메밀소바/막국수", area: "여의도/강남", reason: "좌석이 넓고 수육·만두 등 사이드와 함께 4~6인 식사 가능", price_note: "소바 10,000원대", service_tags: ["넓은 홀", "쉐어 사이드", "점심 모임"], open_status: "영업 상태 지도 확인" },
+          { name: "청수모밀", category: "메밀/일식", area: "여의도", reason: "테이블 회전이 빠르고 다인원 점심 회식 수용이 가능", price_note: "판모밀 11,000원", service_tags: ["단체 점심", "빠른 서빙", "호불호 적음"], open_status: "영업 상태 지도 확인" },
+          { name: "유림면", category: "메밀국수/냄비우동", area: "시청", reason: "소바·비빔메밀·우동 등 메뉴 선택폭이 넓어 여럿이 가기 무난함", price_note: "메밀국수 10,000원", service_tags: ["메뉴 다양", "가성비", "역세권"], open_status: "영업 상태 지도 확인" }
+        ]
       }
     };
 
+    const DEFAULT_MENUS = ["돼지갈비", "삼겹살", "국밥", "파스타", "소바"];
     const menuInput = document.getElementById("menuInput");
     const areaInput = document.getElementById("areaInput");
+    const searchBtn = document.getElementById("searchBtn");
     const errorBox = document.getElementById("errorBox");
     const resultArea = document.getElementById("resultArea");
-    const menuChips = document.querySelectorAll(".chip");
+    const menuChipsContainer = document.getElementById("menuChips");
     const sitButtons = document.querySelectorAll(".sit-btn");
 
     let currentSituation = "solo";
@@ -468,7 +509,7 @@
         </div>
         <article class="top-card">
           <span class="rank-pill">🥇 지금 바로 1순위</span>
-          <div class="place-name">${escapeHtml(top.name)}</div>
+          <div class="place-name"><a class="place-link" href="${top.kakao_map_url}" target="_blank" rel="noopener">${escapeHtml(top.name)} ↗</a></div>
           <div class="place-sub">${escapeHtml(top.category)} · ${escapeHtml(top.area)} · ${escapeHtml(top.open_status)}</div>
           <div class="reason">${escapeHtml(top.reason)}</div>
           <div class="price-line">💰 ${escapeHtml(top.price_note)}</div>
@@ -488,7 +529,7 @@
               <span class="alt-rank">${medal}</span>
               <span class="place-sub">${escapeHtml(item.area)}</span>
             </div>
-            <div class="alt-name">${escapeHtml(item.name)}</div>
+            <div class="alt-name"><a class="place-link" href="${item.kakao_map_url}" target="_blank" rel="noopener">${escapeHtml(item.name)} ↗</a></div>
             <div class="place-sub">${escapeHtml(item.price_note)}</div>
             <div class="reason">${escapeHtml(item.reason)}</div>
             <div class="tags">${renderTags(item.service_tags)}</div>
@@ -512,9 +553,11 @@
         `[${lastData.area} ${lastData.query} · ${lastData.situation_label} 추천]`,
         `1순위: ${lastData.top_pick.name} (${lastData.top_pick.price_note})`,
         `👉 ${lastData.top_pick.reason}`,
+        `📍 ${lastData.top_pick.kakao_map_url}`,
       ];
       lastData.alternatives.forEach((a, i) => {
         lines.push(`${i + 2}순위: ${a.name} - ${a.reason}`);
+        lines.push(`📍 ${a.kakao_map_url}`);
       });
       const text = lines.join("\n");
       const btn = document.getElementById("copyShareBtn");
@@ -527,14 +570,94 @@
       }
     }
 
-    menuChips.forEach((chip) => {
-      chip.addEventListener("click", () => {
-        menuChips.forEach((c) => c.classList.remove("active"));
-        chip.classList.add("active");
-        menuInput.value = chip.dataset.menu;
-        fetchRecommendation();
+    function loadCustomMenus() {
+      try {
+        const raw = localStorage.getItem("pick3_custom_menus");
+        const parsed = raw ? JSON.parse(raw) : [];
+        return Array.isArray(parsed) ? parsed.filter((m) => typeof m === "string" && m.trim()) : [];
+      } catch {
+        return [];
+      }
+    }
+
+    function saveCustomMenus(list) {
+      localStorage.setItem("pick3_custom_menus", JSON.stringify(list));
+    }
+
+    function addCustomMenu(name) {
+      const cleaned = name.trim();
+      if (!cleaned) return;
+      if (!DEFAULT_MENUS.includes(cleaned)) {
+        const custom = loadCustomMenus();
+        if (!custom.includes(cleaned)) {
+          custom.push(cleaned);
+          saveCustomMenus(custom);
+        }
+      }
+      menuInput.value = cleaned;
+      renderMenuChips();
+      fetchRecommendation();
+    }
+
+    function removeCustomMenu(name) {
+      const custom = loadCustomMenus().filter((m) => m !== name);
+      saveCustomMenus(custom);
+      if (menuInput.value.trim() === name) {
+        menuInput.value = DEFAULT_MENUS[0];
+      }
+      renderMenuChips();
+      fetchRecommendation();
+    }
+
+    function renderMenuChips() {
+      const activeMenu = menuInput.value.trim();
+      const custom = loadCustomMenus();
+      const allMenus = [...DEFAULT_MENUS, ...custom.filter((m) => !DEFAULT_MENUS.includes(m))];
+      menuChipsContainer.innerHTML = "";
+
+      allMenus.forEach((menu) => {
+        const isCustom = !DEFAULT_MENUS.includes(menu);
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = `chip${menu === activeMenu ? " active" : ""}`;
+        btn.dataset.menu = menu;
+
+        const labelSpan = document.createElement("span");
+        labelSpan.textContent = menu;
+        btn.appendChild(labelSpan);
+
+        if (isCustom) {
+          const del = document.createElement("span");
+          del.className = "chip-del";
+          del.textContent = "×";
+          del.title = "삭제";
+          del.addEventListener("click", (e) => {
+            e.stopPropagation();
+            removeCustomMenu(menu);
+          });
+          btn.appendChild(del);
+        }
+
+        btn.addEventListener("click", () => {
+          menuInput.value = menu;
+          renderMenuChips();
+          fetchRecommendation();
+        });
+        menuChipsContainer.appendChild(btn);
       });
-    });
+
+      const addBtn = document.createElement("button");
+      addBtn.type = "button";
+      addBtn.className = "chip chip-add";
+      addBtn.textContent = "+ 메뉴 추가";
+      addBtn.addEventListener("click", () => {
+        const typed = prompt("추가할 메뉴 이름을 입력하세요 (예: 초밥, 라멘, 쌀국수):", "");
+        if (typed && typed.trim()) {
+          addCustomMenu(typed);
+        }
+      });
+      menuChipsContainer.appendChild(addBtn);
+    }
 
     sitButtons.forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -545,13 +668,21 @@
       });
     });
 
+    searchBtn.addEventListener("click", () => {
+      renderMenuChips();
+      fetchRecommendation();
+    });
     menuInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") fetchRecommendation();
+      if (e.key === "Enter") {
+        renderMenuChips();
+        fetchRecommendation();
+      }
     });
     areaInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter") fetchRecommendation();
     });
 
+    renderMenuChips();
     fetchRecommendation();
   </script>
 </body>

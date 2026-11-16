@@ -74,7 +74,7 @@ async def health() -> dict:
 @app.get("/api/presets")
 async def presets() -> dict:
     return {
-        "menus": ["돼지갈비", "삼겹살", "국밥", "파스타"],
+        "menus": ["돼지갈비", "삼겹살", "국밥", "파스타", "소바"],
         "situations": [
             {"id": "solo", "label": "혼자 / 점심", "emoji": "🍚"},
             {"id": "date", "label": "둘이서 / 데이트", "emoji": "💑"},
