@@ -13,8 +13,14 @@ if str(PICK3_DIR) not in sys.path:
     sys.path.insert(0, str(PICK3_DIR))
 
 from app import app  # noqa: E402
+from providers import clear_recommend_cache  # noqa: E402
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _reset_cache() -> None:
+    clear_recommend_cache()
 
 
 def test_health_and_index_served() -> None:
@@ -170,7 +176,7 @@ def test_google_places_ranks_by_situation_and_rating(monkeypatch: pytest.MonkeyP
 
     res = client.post(
         "/api/recommend",
-        json={"query": "돼지갈비", "situation": "group", "area": "강남"},
+        json={"query": "돼지갈비", "situation": "group", "area": "강남", "provider": "google"},
     )
     assert res.status_code == 200
     body = res.json()
@@ -246,12 +252,68 @@ def test_google_places_filters_out_of_area_name_matches(monkeypatch: pytest.Monk
 
     res = client.post(
         "/api/recommend",
-        json={"query": "돼지갈비", "situation": "date", "area": "강남"},
+        json={"query": "돼지갈비", "situation": "date", "area": "강남", "provider": "google"},
     )
     assert res.status_code == 200
     names = [res.json()["top_pick"]["name"]] + [a["name"] for a in res.json()["alternatives"]]
     assert "본강남갈비 인천논현본점" not in names
     assert names == ["강남 본점 1", "강남 본점 2", "강남 본점 3"]
+
+
+def test_google_places_uses_6h_cache_on_repeat_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    call_count = 0
+
+    class FakeResp:
+        status_code = 200
+        text = "ok"
+
+        def json(self) -> dict:
+            return {
+                "places": [
+                    {
+                        "displayName": {"text": "캐시 테스트 식당"},
+                        "formattedAddress": "대한민국 서울 강남구 역삼동 1",
+                        "rating": 4.8,
+                        "userRatingCount": 120,
+                        "googleMapsUri": "https://maps.google.com/?cid=1",
+                        "reviews": [],
+                    }
+                ]
+            }
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            pass
+
+        async def post(self, *args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return FakeResp()
+
+    monkeypatch.setenv("GOOGLE_PLACES_API_KEY", "fake_google_key")
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+    first = client.post(
+        "/api/recommend",
+        json={"query": "소바", "situation": "solo", "area": "강남", "provider": "google"},
+    )
+    second = client.post(
+        "/api/recommend",
+        json={"query": "소바", "situation": "solo", "area": "강남", "provider": "google"},
+    )
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["cached"] is False
+    assert second.json()["cached"] is True
+    assert call_count == 1
 
 
 def test_provider_selection_routes_kakao_or_google(monkeypatch: pytest.MonkeyPatch) -> None:

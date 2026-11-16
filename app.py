@@ -41,7 +41,7 @@ class RecommendRequest(BaseModel):
     query: str
     situation: SituationType
     area: str = ""
-    provider: ProviderType = "auto"
+    provider: ProviderType = "kakao"
 
     @field_validator("query")
     @classmethod

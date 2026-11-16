@@ -292,9 +292,9 @@
         </button>
       </div>
       <div class="provider-row" id="providerRow">
-        <button type="button" class="prov-btn active" data-prov="auto">자동 추천</button>
+        <button type="button" class="prov-btn active" data-prov="kakao">카카오 로컬 (무료)</button>
         <button type="button" class="prov-btn" data-prov="google">구글 평점순</button>
-        <button type="button" class="prov-btn" data-prov="kakao">카카오 로컬</button>
+        <button type="button" class="prov-btn" data-prov="auto">자동 추천</button>
       </div>
     </section>
 
@@ -409,7 +409,7 @@
     const provButtons = document.querySelectorAll(".prov-btn");
 
     let currentSituation = "solo";
-    let currentProvider = "auto";
+    let currentProvider = "kakao";
     let lastData = null;
 
     function showError(msg) {
@@ -545,7 +545,7 @@
     function renderResult(data) {
       const top = data.top_pick;
       const alts = data.alternatives || [];
-      const sourceText =
+      const baseSourceText =
         data.data_source === "google_places_api"
           ? "실시간 구글 평점순"
           : data.data_source === "kakao_local_api"
@@ -553,6 +553,7 @@
           : data.data_source === "curated_sample"
           ? "큐레이션 샘플 데이터"
           : "지도 실검색 가이드";
+      const sourceText = data.cached ? `${baseSourceText} · ⚡캐시` : baseSourceText;
 
       let html = `
         <div class="meta-bar">

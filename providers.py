@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import asdict, dataclass
 from typing import Literal
 from urllib.parse import quote
@@ -11,6 +12,34 @@ import httpx
 
 SituationType = Literal["solo", "date", "group"]
 ProviderType = Literal["auto", "google", "kakao"]
+
+_CACHE_TTL_SECONDS = 6 * 3600  # 6 hours to prevent redundant paid API calls
+_CACHE_MAX_ENTRIES = 500
+_RECOMMEND_CACHE: dict[tuple[str, str, str, str], tuple[float, dict]] = {}
+
+
+def clear_recommend_cache() -> None:
+    """Clear in-memory recommendation cache (used in tests)."""
+    _RECOMMEND_CACHE.clear()
+
+
+def _get_cached_result(key: tuple[str, str, str, str]) -> dict | None:
+    entry = _RECOMMEND_CACHE.get(key)
+    if not entry:
+        return None
+    expires_at, data = entry
+    if time.monotonic() > expires_at:
+        _RECOMMEND_CACHE.pop(key, None)
+        return None
+    return {**data, "cached": True}
+
+
+def _set_cached_result(key: tuple[str, str, str, str], data: dict) -> None:
+    if len(_RECOMMEND_CACHE) >= _CACHE_MAX_ENTRIES:
+        # Evict oldest inserted entry to keep memory bounded
+        oldest_key = next(iter(_RECOMMEND_CACHE))
+        _RECOMMEND_CACHE.pop(oldest_key, None)
+    _RECOMMEND_CACHE[key] = (time.monotonic() + _CACHE_TTL_SECONDS, data)
 
 _LAST_KAKAO_DIAG: dict[str, object] = {"status": None, "error": None}
 _LAST_GOOGLE_DIAG: dict[str, object] = {"status": None, "error": None}
@@ -765,43 +794,64 @@ async def _fetch_kakao_local(
 
 
 async def get_recommendations(
-    query: str, situation: SituationType, area: str = "", provider: ProviderType = "auto"
+    query: str, situation: SituationType, area: str = "", provider: ProviderType = "kakao"
 ) -> dict:
-    """Return exactly 1 top pick + up to 2 alternatives (max 3 total)."""
+    """Return exactly 1 top pick + up to 2 alternatives (max 3 total) with 6h TTL cache."""
     clean_query = query.strip()
     clean_area = area.strip()
+    cache_key = (provider, clean_query.lower(), clean_area.lower(), situation)
 
-    # 1. Google Places API (when provider is auto or google)
-    google_key = os.getenv("GOOGLE_PLACES_API_KEY", "").strip()
-    if provider in ("auto", "google") and google_key:
-        google_picks = await _fetch_google_places(clean_query, clean_area, situation, google_key)
-        if google_picks:
-            return {
-                "query": clean_query,
-                "area": clean_area or "내 주변",
-                "situation": situation,
-                "situation_label": _SITUATION_META[situation]["label"],
-                "criteria": f"{_SITUATION_META[situation]['criteria']} · 구글 평점순",
-                "data_source": "google_places_api",
-                "top_pick": google_picks[0].to_dict(),
-                "alternatives": [p.to_dict() for p in google_picks[1:3]],
-            }
+    cached = _get_cached_result(cache_key)
+    if cached is not None:
+        return cached
 
-    # 2. Kakao Local API (when provider is auto or kakao)
+    # Cost-saving priority: Kakao Local (100k/day free) is default for "kakao" and "auto".
+    # Google Places (paid/credit-limited) runs when user explicitly picks "google" or as fallback.
     kakao_key = os.getenv("KAKAO_REST_API_KEY", "").strip()
-    if provider in ("auto", "kakao") and kakao_key:
-        live_picks = await _fetch_kakao_local(clean_query, clean_area, situation, kakao_key)
-        if live_picks:
-            return {
-                "query": clean_query,
-                "area": clean_area or "내 주변",
-                "situation": situation,
-                "situation_label": _SITUATION_META[situation]["label"],
-                "criteria": _SITUATION_META[situation]["criteria"],
-                "data_source": "kakao_local_api",
-                "top_pick": live_picks[0].to_dict(),
-                "alternatives": [p.to_dict() for p in live_picks[1:3]],
-            }
+    google_key = os.getenv("GOOGLE_PLACES_API_KEY", "").strip()
+
+    order = (
+        ("google", "kakao")
+        if provider == "google"
+        else ("kakao",)
+        if provider == "kakao"
+        else ("kakao", "google")
+    )
+
+    for engine in order:
+        if engine == "kakao" and kakao_key:
+            live_picks = await _fetch_kakao_local(clean_query, clean_area, situation, kakao_key)
+            if live_picks:
+                result = {
+                    "query": clean_query,
+                    "area": clean_area or "내 주변",
+                    "situation": situation,
+                    "situation_label": _SITUATION_META[situation]["label"],
+                    "criteria": _SITUATION_META[situation]["criteria"],
+                    "data_source": "kakao_local_api",
+                    "cached": False,
+                    "top_pick": live_picks[0].to_dict(),
+                    "alternatives": [p.to_dict() for p in live_picks[1:3]],
+                }
+                _set_cached_result(cache_key, result)
+                return result
+
+        if engine == "google" and google_key:
+            google_picks = await _fetch_google_places(clean_query, clean_area, situation, google_key)
+            if google_picks:
+                result = {
+                    "query": clean_query,
+                    "area": clean_area or "내 주변",
+                    "situation": situation,
+                    "situation_label": _SITUATION_META[situation]["label"],
+                    "criteria": f"{_SITUATION_META[situation]['criteria']} · 구글 평점순",
+                    "data_source": "google_places_api",
+                    "cached": False,
+                    "top_pick": google_picks[0].to_dict(),
+                    "alternatives": [p.to_dict() for p in google_picks[1:3]],
+                }
+                _set_cached_result(cache_key, result)
+                return result
 
     # 2. Match curated sample DB (exact or substring match)
     matched_key = None
