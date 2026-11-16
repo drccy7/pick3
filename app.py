@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 
-from providers import SituationType, get_kakao_diag, get_recommendations
+from providers import ProviderType, SituationType, get_kakao_diag, get_recommendations
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -41,6 +41,7 @@ class RecommendRequest(BaseModel):
     query: str
     situation: SituationType
     area: str = ""
+    provider: ProviderType = "auto"
 
     @field_validator("query")
     @classmethod
@@ -89,4 +90,5 @@ async def recommend(payload: RecommendRequest) -> dict:
         query=payload.query,
         situation=payload.situation,
         area=payload.area,
+        provider=payload.provider,
     )

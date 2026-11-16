@@ -10,6 +10,7 @@ from urllib.parse import quote
 import httpx
 
 SituationType = Literal["solo", "date", "group"]
+ProviderType = Literal["auto", "google", "kakao"]
 
 _LAST_KAKAO_DIAG: dict[str, object] = {"status": None, "error": None}
 _LAST_GOOGLE_DIAG: dict[str, object] = {"status": None, "error": None}
@@ -764,15 +765,15 @@ async def _fetch_kakao_local(
 
 
 async def get_recommendations(
-    query: str, situation: SituationType, area: str = ""
+    query: str, situation: SituationType, area: str = "", provider: ProviderType = "auto"
 ) -> dict:
     """Return exactly 1 top pick + up to 2 alternatives (max 3 total)."""
     clean_query = query.strip()
     clean_area = area.strip()
 
-    # 1. Google Places API (rating + review count + openNow + review keyword fit)
+    # 1. Google Places API (when provider is auto or google)
     google_key = os.getenv("GOOGLE_PLACES_API_KEY", "").strip()
-    if google_key:
+    if provider in ("auto", "google") and google_key:
         google_picks = await _fetch_google_places(clean_query, clean_area, situation, google_key)
         if google_picks:
             return {
@@ -786,9 +787,9 @@ async def get_recommendations(
                 "alternatives": [p.to_dict() for p in google_picks[1:3]],
             }
 
-    # 2. Optional live Kakao Local API if configured
+    # 2. Kakao Local API (when provider is auto or kakao)
     kakao_key = os.getenv("KAKAO_REST_API_KEY", "").strip()
-    if kakao_key:
+    if provider in ("auto", "kakao") and kakao_key:
         live_picks = await _fetch_kakao_local(clean_query, clean_area, situation, kakao_key)
         if live_picks:
             return {

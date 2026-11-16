@@ -139,6 +139,29 @@
       background: var(--accent-soft);
       transform: translateY(-1px);
     }
+    .provider-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 6px;
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid var(--border);
+    }
+    .prov-btn {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      border-radius: 10px;
+      padding: 8px 6px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .prov-btn.active {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      color: var(--text);
+    }
     .meta-bar {
       display: flex;
       justify-content: space-between;
@@ -268,6 +291,11 @@
           <span>여럿이 / 회식</span>
         </button>
       </div>
+      <div class="provider-row" id="providerRow">
+        <button type="button" class="prov-btn active" data-prov="auto">자동 추천</button>
+        <button type="button" class="prov-btn" data-prov="google">구글 평점순</button>
+        <button type="button" class="prov-btn" data-prov="kakao">카카오 로컬</button>
+      </div>
     </section>
 
     <section id="resultArea">
@@ -378,8 +406,10 @@
     const resultArea = document.getElementById("resultArea");
     const menuChipsContainer = document.getElementById("menuChips");
     const sitButtons = document.querySelectorAll(".sit-btn");
+    const provButtons = document.querySelectorAll(".prov-btn");
 
     let currentSituation = "solo";
+    let currentProvider = "auto";
     let lastData = null;
 
     function showError(msg) {
@@ -471,7 +501,12 @@
           const res = await fetch(`${apiBase}/api/recommend`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ query, area, situation: currentSituation }),
+            body: JSON.stringify({
+              query,
+              area,
+              situation: currentSituation,
+              provider: currentProvider,
+            }),
           });
           if (res.ok) {
             const data = await res.json();
@@ -675,6 +710,15 @@
         sitButtons.forEach((b) => b.classList.remove("active"));
         btn.classList.add("active");
         currentSituation = btn.dataset.sit;
+        fetchRecommendation();
+      });
+    });
+
+    provButtons.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        provButtons.forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        currentProvider = btn.dataset.prov;
         fetchRecommendation();
       });
     });

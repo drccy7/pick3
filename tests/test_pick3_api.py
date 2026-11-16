@@ -252,3 +252,66 @@ def test_google_places_filters_out_of_area_name_matches(monkeypatch: pytest.Monk
     names = [res.json()["top_pick"]["name"]] + [a["name"] for a in res.json()["alternatives"]]
     assert "본강남갈비 인천논현본점" not in names
     assert names == ["강남 본점 1", "강남 본점 2", "강남 본점 3"]
+
+
+def test_provider_selection_routes_kakao_or_google(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    class FakeResp:
+        status_code = 200
+        text = "ok"
+
+        def json(self) -> dict:
+            return {
+                "documents": [
+                    {
+                        "id": "101",
+                        "place_name": "카카오 갈비 1",
+                        "road_address_name": "서울 강남구 역삼로 1",
+                        "category_name": "음식점 > 한식 > 갈비",
+                        "place_url": "http://place.map.kakao.com/101",
+                    },
+                    {
+                        "id": "102",
+                        "place_name": "카카오 갈비 2",
+                        "road_address_name": "서울 강남구 역삼로 2",
+                        "category_name": "음식점 > 한식 > 갈비",
+                        "place_url": "http://place.map.kakao.com/102",
+                    },
+                    {
+                        "id": "103",
+                        "place_name": "카카오 갈비 3",
+                        "road_address_name": "서울 강남구 역삼로 3",
+                        "category_name": "음식점 > 한식 > 갈비",
+                        "place_url": "http://place.map.kakao.com/103",
+                    },
+                ]
+            }
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            pass
+
+        async def get(self, *args, **kwargs):
+            return FakeResp()
+
+        async def post(self, *args, **kwargs):
+            raise AssertionError("Google Places should not be called when provider='kakao'")
+
+    monkeypatch.setenv("GOOGLE_PLACES_API_KEY", "fake_google_key")
+    monkeypatch.setenv("KAKAO_REST_API_KEY", "fake_kakao_key")
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+    res = client.post(
+        "/api/recommend",
+        json={"query": "돼지갈비", "situation": "solo", "area": "강남", "provider": "kakao"},
+    )
+    assert res.status_code == 200
+    assert res.json()["data_source"] == "kakao_local_api"
+    assert res.json()["top_pick"]["name"] == "카카오 갈비 1"
