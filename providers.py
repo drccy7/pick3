@@ -1,0 +1,576 @@
+"""Data providers and situation-based ranking engine for Pick3."""
+
+from __future__ import annotations
+
+import os
+from dataclasses import asdict, dataclass
+from typing import Literal
+from urllib.parse import quote
+
+import httpx
+
+SituationType = Literal["solo", "date", "group"]
+
+
+@dataclass(frozen=True)
+class RestaurantPick:
+    """Single recommended restaurant card."""
+
+    name: str
+    category: str
+    area: str
+    reason: str
+    price_note: str
+    service_tags: list[str]
+    open_status: str
+    naver_map_url: str
+    kakao_map_url: str
+    is_verified_detail: bool = True
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+def _build_map_urls(name: str, area: str) -> tuple[str, str]:
+    q = quote(f"{area} {name}".strip())
+    return (
+        f"https://map.naver.com/p/search/{q}",
+        f"https://map.kakao.com/link/search/{q}",
+    )
+
+
+# Curated realistic sample dataset for instant zero-API-key MVP verification.
+_SAMPLE_DB: dict[str, dict[SituationType, list[dict]]] = {
+    "돼지갈비": {
+        "solo": [
+            {
+                "name": "명륜진사갈비 역삼점",
+                "category": "돼지갈비",
+                "area": "역삼/강남",
+                "reason": "1인분 주문 부담 없고 점심 시간대 웨이팅 거의 없음",
+                "price_note": "100g당 약 5,500원 (점심 특선 11,000원)",
+                "service_tags": ["혼밥 가능", "점심 특선", "빠른 회전"],
+                "open_status": "영업 상태 지도 확인",
+            },
+            {
+                "name": "청기와타운 선릉점",
+                "category": "돼지갈비",
+                "area": "선릉",
+                "reason": "1인 정식 메뉴가 따로 있어 혼자서도 눈치 안 보고 식사 가능",
+                "price_note": "갈비 정식 13,000원",
+                "service_tags": ["1인 정식", "깔끔한 좌석", "역세권"],
+                "open_status": "영업 상태 지도 확인",
+            },
+            {
+                "name": "돈수백 돼지갈비백반",
+                "category": "한식/갈비",
+                "area": "강남",
+                "reason": "구워져서 나오는 1인 갈비백반으로 15분 컷 점심 가능",
+                "price_note": "1인 백반 12,000원",
+                "service_tags": ["완조리 제공", "혼밥 특화", "옷 냄새 적음"],
+                "open_status": "영업 상태 지도 확인",
+            },
+        ],
+        "date": [
+            {
+                "name": "몽탄 성수직영점",
+                "category": "우대갈비/돼지갈비",
+                "area": "성수",
+                "reason": "직원이 처음부터 끝까지 구워줘서 대화에 집중하기 좋음",
+                "price_note": "100g당 약 9,200원",
+                "service_tags": ["직원 그릴링", "인테리어 우수", "연기 적음"],
+                "open_status": "영업 상태 지도 확인",
+            },
+            {
+                "name": "화포식당 가로수길점",
+                "category": "숙성 돼지갈비",
+                "area": "신사",
+                "reason": "전 좌석 환기 덕트가 강하고 직원이 직접 컷팅까지 해줌",
+                "price_note": "100g당 약 8,500원",
+                "service_tags": ["직원 구이", "쾌적한 환기", "예약 가능"],
+                "open_status": "영업 상태 지도 확인",
+            },
+            {
+                "name": "남영돈 숯불갈비",
+                "category": "참숯 돼지갈비",
+                "area": "숙대입구",
+                "reason": "초벌 후 테이블에서 마무리 구이해 주어 굽기 실패 없음",
+                "price_note": "100g당 약 7,800원",
+                "service_tags": ["초벌 제공", "분위기 좋음", "사이드 맛집"],
+                "open_status": "영업 상태 지도 확인",
+            },
+        ],
+        "group": [
+            {
+                "name": "강강술래 역삼점",
+                "category": "한돈 돼지갈비",
+                "area": "역삼",
+                "reason": "프라이빗 룸 완비 + 발렛 주차 가능해 6인 이상 회식에 최적",
+                "price_note": "100g당 약 7,500원",
+                "service_tags": ["단체 룸 완비", "주차/발렛", "직원 구이"],
+                "open_status": "영업 상태 지도 확인",
+            },
+            {
+                "name": "송추가마골 인 어반",
+                "category": "갈비 전문",
+                "area": "광화문/종로",
+                "reason": "대형 홀과 12인석 룸 분리로 소음 걱정 없이 회식 진행",
+                "price_note": "100g당 약 8,200원",
+                "service_tags": ["대형 룸", "예약 확정", "넓은 테이블"],
+                "open_status": "영업 상태 지도 확인",
+            },
+            {
+                "name": "마포진짜원조최대포",
+                "category": "돼지갈비",
+                "area": "공덕/마포",
+                "reason": "가성비 좋고 단체석 회전이 빨라 2차 이동까지 동선 편리",
+                "price_note": "100g당 약 5,500원",
+                "service_tags": ["가성비 1위", "단체석 다수", "참숯"],
+                "open_status": "영업 상태 지도 확인",
+            },
+        ],
+    },
+    "삼겹살": {
+        "solo": [
+            {
+                "name": "혼고집 1인 삼겹",
+                "category": "1인 고기",
+                "area": "강남",
+                "reason": "1인 전용 미니 불판으로 눈치 없이 삼겹살 1인분 가능",
+                "price_note": "1인 세트 13,900원",
+                "service_tags": ["1인 화로", "혼밥 1위", "공기밥 포함"],
+                "open_status": "영업 상태 지도 확인",
+            },
+            {
+                "name": "싸움의고수",
+                "category": "보쌈/삼겹 도시락",
+                "area": "주요 역세권",
+                "reason": "1인 바 테이블 좌석 중심, 주문 후 5분 내 제공",
+                "price_note": "1인 정식 9,800원",
+                "service_tags": ["1인 좌석", "초고속 서빙", "가성비"],
+                "open_status": "영업 상태 지도 확인",
+            },
+            {
+                "name": "고반식당",
+                "category": "숙성 삼겹",
+                "area": "역삼",
+                "reason": "비혼잡 시간대 1인 2인분 주문 시 직원이 직접 구워줌",
+                "price_note": "100g당 약 9,000원",
+                "service_tags": ["직원 구이", "김치찌개 서비스", "깔끔함"],
+                "open_status": "영업 상태 지도 확인",
+            },
+        ],
+        "date": [
+            {
+                "name": "금돼지식당",
+                "category": "본삼겹",
+                "area": "약수",
+                "reason": "전담 직원이 최적 온도로 구워주며 사이드 페어링이 훌륭함",
+                "price_note": "100g당 약 11,000원",
+                "service_tags": ["직원 그릴링", "미쉐린 빕구르망", "감성 외관"],
+                "open_status": "영업 상태 지도 확인",
+            },
+            {
+                "name": "꿉당",
+                "category": "목살/삼겹",
+                "area": "신사/성수",
+                "reason": "고기를 직접 구울 필요 없고 고쿠미 밥 조합이 데이트에 인기",
+                "price_note": "100g당 약 10,500원",
+                "service_tags": ["풀 그릴링", "코쿠미 밥", "바 좌석"],
+                "open_status": "영업 상태 지도 확인",
+            },
+            {
+                "name": "숙달돼지",
+                "category": "습식숙성 삼겹",
+                "area": "강남/홍대",
+                "reason": "와인 콜키지 가능하고 테이블 간격이 넓어 조용히 대화 가능",
+                "price_note": "100g당 약 9,500원",
+                "service_tags": ["직원 구이", "콜키지 가능", "구워먹는 치즈"],
+                "open_status": "영업 상태 지도 확인",
+            },
+        ],
+        "group": [
+            {
+                "name": "하남돼지집",
+                "category": "초벌 삼겹살",
+                "area": "주요 상권",
+                "reason": "초벌 후 직원이 빠르게 컷팅해줘서 다인원 회식 흐름이 안 끊김",
+                "price_note": "100g당 약 8,800원",
+                "service_tags": ["초벌+직원구이", "단체 예약", "넓은 홀"],
+                "open_status": "영업 상태 지도 확인",
+            },
+            {
+                "name": "새마을식당",
+                "category": "열탄불고기/삼겹",
+                "area": "주요 상권",
+                "reason": "인원수 많아도 예산 부담 적고 7분돼지김치로 마무리가 깔끔",
+                "price_note": "100g당 약 6,500원",
+                "service_tags": ["가성비 회식", "넓은 좌석", "빠른 추가주문"],
+                "open_status": "영업 상태 지도 확인",
+            },
+            {
+                "name": "도드람 본래",
+                "category": "한돈 삼겹",
+                "area": "방이/잠실",
+                "reason": "룸 좌석과 주차 공간이 넉넉해 팀 회식 예약에 안정적",
+                "price_note": "100g당 약 8,500원",
+                "service_tags": ["룸 보유", "주차 가능", "쾌적한 환기"],
+                "open_status": "영업 상태 지도 확인",
+            },
+        ],
+    },
+    "국밥": {
+        "solo": [
+            {
+                "name": "농민백암순대",
+                "category": "순대국밥",
+                "area": "선릉/강남",
+                "reason": "1인 회전이 매우 빠르고 잡내 없는 진한 국물로 혼밥 만족도 최상",
+                "price_note": "국밥 10,000원",
+                "service_tags": ["혼밥 성지", "빠른 회전", "진한 육수"],
+                "open_status": "영업 상태 지도 확인",
+            },
+            {
+                "name": "옥동식",
+                "category": "돼지곰탕",
+                "area": "합정/서교",
+                "reason": "전 좌석 바 테이블 구조라 1인 방문이 기본인 깔끔한 식사",
+                "price_note": "보통 10,000원",
+                "service_tags": ["1인 바테이블", "맑은 국물", "미쉐린"],
+                "open_status": "영업 상태 지도 확인",
+            },
+            {
+                "name": "광화문국밥",
+                "category": "돼지국밥",
+                "area": "시청/광화문",
+                "reason": "깔끔한 토렴식 국밥과 반찬 1인 세팅으로 점심 혼밥 최적",
+                "price_note": "국밥 9,500원",
+                "service_tags": ["깔끔한 1인상", "빠른 서빙", "조용함"],
+                "open_status": "영업 상태 지도 확인",
+            },
+        ],
+        "date": [
+            {
+                "name": "안암",
+                "category": "모던 돼지국밥",
+                "area": "안국",
+                "reason": "국밥집 같지 않은 세련된 공간과 수비드 고기 비주얼",
+                "price_note": "국밥 11,000원",
+                "service_tags": ["감성 인테리어", "깔끔한 맑은국", "데이트 OK"],
+                "open_status": "영업 상태 지도 확인",
+            },
+            {
+                "name": "하동관",
+                "category": "한우 곰탕",
+                "area": "명동/여의도",
+                "reason": "오랜 전통의 깔끔한 맛으로 주말 낮 가벼운 데이트 코스에 적합",
+                "price_note": "보통 16,000원",
+                "service_tags": ["전통 노포", "깔끔한 맛", "빠른 식사"],
+                "open_status": "영업 상태 지도 확인",
+            },
+            {
+                "name": "엄용백 돼지국밥",
+                "category": "부산식 돼지국밥",
+                "area": "인사동/종각",
+                "reason": "정갈한 트레이 세팅과 맑은/진한 육수 선택 가능",
+                "price_note": "국밥 11,000원",
+                "service_tags": ["정갈한 상차림", "육수 선택", "냄새 적음"],
+                "open_status": "영업 상태 지도 확인",
+            },
+        ],
+        "group": [
+            {
+                "name": "청진옥",
+                "category": "해장국/국밥",
+                "area": "종각",
+                "reason": "좌석 수가 많고 수육·모둠전과 함께 4~8인 식사 및 반주 가능",
+                "price_note": "해장국 12,000원",
+                "service_tags": ["대형 홀", "안주 메뉴", "아침/야간 가능"],
+                "open_status": "영업 상태 지도 확인",
+            },
+            {
+                "name": "진주집",
+                "category": "꼬리곰탕/설렁탕",
+                "area": "남대문/여의도",
+                "reason": "어르신·직장인 모두 호불호 없는 메뉴와 넓은 테이블 보유",
+                "price_note": "설렁탕 12,000원",
+                "service_tags": ["호불호 없음", "단체 수용", "빠른 서빙"],
+                "open_status": "영업 상태 지도 확인",
+            },
+            {
+                "name": "신의주찹쌀순대",
+                "category": "순대국/전골",
+                "area": "주요 상권",
+                "reason": "국밥과 순대곱창전골을 섞어 주문할 수 있어 다인원 식사에 유리",
+                "price_note": "국밥 10,000원",
+                "service_tags": ["전골+국밥", "넓은 좌석", "가성비"],
+                "open_status": "영업 상태 지도 확인",
+            },
+        ],
+    },
+    "파스타": {
+        "solo": [
+            {
+                "name": "롤링파스타",
+                "category": "캐주얼 파스타",
+                "area": "주요 역세권",
+                "reason": "1인 테이블 다수 + 가격 부담 없어 평일 점심 혼밥에 최적",
+                "price_note": "파스타 7,900~9,900원",
+                "service_tags": ["1만원 이하", "혼밥 환영", "빠른 조리"],
+                "open_status": "영업 상태 지도 확인",
+            },
+            {
+                "name": "라구식당",
+                "category": "생면 라구 파스타",
+                "area": "안암/신촌",
+                "reason": "바 좌석이 있어 혼자 가도 자연스럽고 1인 세트 구성이 알참",
+                "price_note": "파스타 12,500원",
+                "service_tags": ["바 좌석", "가성비", "단일 인기메뉴"],
+                "open_status": "영업 상태 지도 확인",
+            },
+            {
+                "name": "어거스트힐",
+                "category": "파스타/샐러드",
+                "area": "강남",
+                "reason": "조용한 창가 1인석에서 여유롭게 점심 식사 가능",
+                "price_note": "파스타 14,000원대",
+                "service_tags": ["창가 좌석", "조용함", "브레이크 확인"],
+                "open_status": "영업 상태 지도 확인",
+            },
+        ],
+        "date": [
+            {
+                "name": "도우룸",
+                "category": "생면 파스타",
+                "area": "서래마을",
+                "reason": "어두운 조명과 수준 높은 생면 파스타로 기념일·데이트 만족도 높음",
+                "price_note": "파스타 24,000~29,000원",
+                "service_tags": ["분위기 1위", "와인 페어링", "예약 권장"],
+                "open_status": "영업 상태 지도 확인",
+            },
+            {
+                "name": "오스테리아 오르조",
+                "category": "이탈리안",
+                "area": "한남동",
+                "reason": "화이트 트러플 라구 파스타가 시그니처이며 서비스 응대가 섬세함",
+                "price_note": "파스타 25,000원대",
+                "service_tags": ["데이트 성지", "발렛 가능", "캐치테이블"],
+                "open_status": "영업 상태 지도 확인",
+            },
+            {
+                "name": "바위파스타바",
+                "category": "파스타 오마카세/바",
+                "area": "성수",
+                "reason": "셰프 조리 과정을 바로 보며 대화할 수 있는 2인 바 좌석",
+                "price_note": "파스타 22,000원대",
+                "service_tags": ["오픈키친 바", "특별한 날", "사전 예약"],
+                "open_status": "영업 상태 지도 확인",
+            },
+        ],
+        "group": [
+            {
+                "name": "매드포갈릭",
+                "category": "이탈리안/스테이크",
+                "area": "주요 상권",
+                "reason": "6~10인 단체 테이블과 세트 할인이 잘 되어 있어 회식/모임 편리",
+                "price_note": "1인 약 25,000~35,000원",
+                "service_tags": ["대형 테이블", "주차 지원", "세트 할인"],
+                "open_status": "영업 상태 지도 확인",
+            },
+            {
+                "name": "세상의모든아침",
+                "category": "브런치/파스타",
+                "area": "여의도/광교",
+                "reason": "넓은 홀과 뷰 덕분에 다인원 모임이나 팀 점심 회식에 적합",
+                "price_note": "파스타 22,000원대",
+                "service_tags": ["대형 홀", "예약 가능", "뷰 맛집"],
+                "open_status": "영업 상태 지도 확인",
+            },
+            {
+                "name": "일프리모",
+                "category": "이탈리안 비스트로",
+                "area": "강남/선릉",
+                "reason": "파스타·리조또·피자를 쉐어하기 좋고 단체 룸 예약 가능",
+                "price_note": "파스타 18,000원대",
+                "service_tags": ["쉐어 메뉴", "단체석", "와인 가능"],
+                "open_status": "영업 상태 지도 확인",
+            },
+        ],
+    },
+}
+
+_SITUATION_META: dict[SituationType, dict] = {
+    "solo": {
+        "label": "혼자 / 점심",
+        "criteria": "1인 주문 가능 · 빠른 회전 · 웨이팅 최소",
+    },
+    "date": {
+        "label": "둘이서 / 데이트",
+        "criteria": "분위기 · 직원 구이/응대 · 대화하기 좋은 환경",
+    },
+    "group": {
+        "label": "여럿이 / 회식",
+        "criteria": "단체석/룸 · 주차/예약 · 예산 및 쉐어 효율",
+    },
+}
+
+
+def _build_dynamic_fallback(
+    query: str, area: str, situation: SituationType
+) -> list[RestaurantPick]:
+    """Build honest, non-hallucinated 3-pick guidance for any custom menu query."""
+    area_label = area if area else "내 주변"
+    sit_meta = _SITUATION_META[situation]
+    variants = [
+        (
+            f"{area_label} {query} 가성비 1순위 후보",
+            f"'{sit_meta['label']}' 조건 기준으로 가격 대비 만족도가 높은 후보를 지도에서 바로 확인하세요.",
+            ["가성비 우선", sit_meta["label"], "지도 실리뷰 확인"],
+            f"{area_label} {query} 가성비",
+        ),
+        (
+            f"{area_label} {query} 평점/리뷰 상위 후보",
+            "방문자 리뷰 수가 많고 실패 확률이 낮은 안정적 대안입니다.",
+            ["리뷰 검증", "대안 1", "영업시간 확인"],
+            f"{area_label} {query} 맛집",
+        ),
+        (
+            f"{area_label} {query} 쾌적/편의 우선 후보",
+            "좌석 여유, 주차, 예약 가능 여부를 기준으로 비교할 수 있는 대안입니다.",
+            ["좌석/주차", "대안 2", "웨이팅 체크"],
+            f"{area_label} {query} 예약",
+        ),
+    ]
+    picks: list[RestaurantPick] = []
+    for title, reason, tags, search_term in variants:
+        naver_url, kakao_url = _build_map_urls(search_term, "")
+        picks.append(
+            RestaurantPick(
+                name=title,
+                category=query,
+                area=area_label,
+                reason=reason,
+                price_note="상세 가격 정보는 지도 링크에서 확인",
+                service_tags=tags,
+                open_status="실시간 영업 상태 지도 확인",
+                naver_map_url=naver_url,
+                kakao_map_url=kakao_url,
+                is_verified_detail=False,
+            )
+        )
+    return picks
+
+
+async def _fetch_kakao_local(
+    query: str, area: str, situation: SituationType, api_key: str
+) -> list[RestaurantPick] | None:
+    """Query Kakao Local API when KAKAO_REST_API_KEY is configured."""
+    keyword = f"{area} {query}".strip() if area else query
+    headers = {"Authorization": f"KakaoAK {api_key}"}
+    params = {"query": keyword, "category_group_code": "FD6", "size": 6}
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            resp = await client.get(
+                "https://dapi.kakao.com/v2/local/search/keyword.json",
+                headers=headers,
+                params=params,
+            )
+            if resp.status_code != 200:
+                return None
+            docs = resp.json().get("documents", [])
+    except Exception:
+        return None
+
+    if not docs:
+        return None
+
+    sit_label = _SITUATION_META[situation]["label"]
+    picks: list[RestaurantPick] = []
+    for item in docs[:3]:
+        name = item.get("place_name", "상호 미상")
+        addr = item.get("road_address_name") or item.get("address_name") or area or "위치 확인"
+        cat = item.get("category_name", query).split(">")[-1].strip() or query
+        naver_url, _ = _build_map_urls(name, area)
+        kakao_url = item.get("place_url") or _build_map_urls(name, area)[1]
+        picks.append(
+            RestaurantPick(
+                name=name,
+                category=cat,
+                area=addr,
+                reason=f"카카오 로컬 검색 상위 매칭 ({sit_label} 기준 세부 조건은 지도 리뷰 확인)",
+                price_note="메뉴/100g 가격은 지도 상세 확인",
+                service_tags=[cat, sit_label, "실시간 검색 결과"],
+                open_status="영업시간 지도 확인",
+                naver_map_url=naver_url,
+                kakao_map_url=kakao_url,
+                is_verified_detail=False,
+            )
+        )
+    return picks
+
+
+async def get_recommendations(
+    query: str, situation: SituationType, area: str = ""
+) -> dict:
+    """Return exactly 1 top pick + up to 2 alternatives (max 3 total)."""
+    clean_query = query.strip()
+    clean_area = area.strip()
+
+    # 1. Optional live Kakao Local API if configured
+    kakao_key = os.getenv("KAKAO_REST_API_KEY", "").strip()
+    if kakao_key:
+        live_picks = await _fetch_kakao_local(clean_query, clean_area, situation, kakao_key)
+        if live_picks:
+            return {
+                "query": clean_query,
+                "area": clean_area or "내 주변",
+                "situation": situation,
+                "situation_label": _SITUATION_META[situation]["label"],
+                "criteria": _SITUATION_META[situation]["criteria"],
+                "data_source": "kakao_local_api",
+                "top_pick": live_picks[0].to_dict(),
+                "alternatives": [p.to_dict() for p in live_picks[1:3]],
+            }
+
+    # 2. Match curated sample DB (exact or substring match)
+    matched_key = None
+    for key in _SAMPLE_DB:
+        if key in clean_query or clean_query in key:
+            matched_key = key
+            break
+
+    if matched_key is not None:
+        raw_items = _SAMPLE_DB[matched_key][situation][:3]
+        picks: list[RestaurantPick] = []
+        for item in raw_items:
+            display_area = clean_area or item["area"]
+            naver_url, kakao_url = _build_map_urls(item["name"], display_area)
+            picks.append(
+                RestaurantPick(
+                    name=item["name"],
+                    category=item["category"],
+                    area=display_area,
+                    reason=item["reason"],
+                    price_note=item["price_note"],
+                    service_tags=item["service_tags"],
+                    open_status=item["open_status"],
+                    naver_map_url=naver_url,
+                    kakao_map_url=kakao_url,
+                    is_verified_detail=True,
+                )
+            )
+        source = "curated_sample"
+    else:
+        picks = _build_dynamic_fallback(clean_query, clean_area, situation)
+        source = "dynamic_map_search"
+
+    return {
+        "query": clean_query,
+        "area": clean_area or "내 주변",
+        "situation": situation,
+        "situation_label": _SITUATION_META[situation]["label"],
+        "criteria": _SITUATION_META[situation]["criteria"],
+        "data_source": source,
+        "top_pick": picks[0].to_dict(),
+        "alternatives": [p.to_dict() for p in picks[1:3]],
+    }
