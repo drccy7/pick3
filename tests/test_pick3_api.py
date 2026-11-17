@@ -604,3 +604,17 @@ def test_pwa_manifest_icon_and_caution_note() -> None:
     caution = providers._extract_caution_note("평일 브레이크타임 15시~17시이고 저녁엔 웨이팅 있어요")
     assert "브레이크타임" in caution
     assert "웨이팅" in caution
+
+
+def test_reels_script_endpoint() -> None:
+    res = client.post(
+        "/api/reels-script",
+        json={"query": "돼지갈비", "situation": "date", "area": "강남", "episode": 3},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["episode"] == 3
+    assert "#3" in body["title"]
+    assert len(body["cuts"]) == 3
+    assert "팔로우" in body["outro_cta_14_18s"]
+    assert "인스타 본문 캡션" in body["full_text"]

@@ -327,6 +327,22 @@
       cursor: pointer;
     }
     .share-btn:active { opacity: 0.8; }
+    .reels-box {
+      margin-top: 10px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 13px;
+      display: none;
+    }
+    .reels-pre {
+      white-space: pre-wrap;
+      font-family: inherit;
+      font-size: 12px;
+      line-height: 1.55;
+      color: #e2e8f0;
+      margin: 8px 0 10px;
+    }
     .error-box { color: #ff8a8a; font-size: 13px; margin-top: 8px; display: none; }
     .empty-hint { text-align: center; color: var(--muted); font-size: 13px; padding: 28px 10px; }
   </style>
@@ -738,12 +754,89 @@
       });
 
       html += `<button type="button" class="share-btn" id="copyShareBtn">📋 카톡 공유용 3곳 요약 복사</button>`;
+      html += `<button type="button" class="share-btn" id="genReelsBtn" style="margin-top:8px;border-color:rgba(255,107,53,0.45);">🎬 인스타 릴스 시리즈 대본 만들기</button>`;
+      html += `<section class="reels-box" id="reelsBox"><div class="compare-title">🎬 15초 인스타 릴스 대본</div><pre class="reels-pre" id="reelsPre"></pre><button type="button" class="share-btn" id="copyReelsBtn">📋 릴스 대본 전체 복사</button></section>`;
       resultArea.innerHTML = html;
 
       document.getElementById("copyShareBtn").addEventListener("click", copySummary);
+      document.getElementById("genReelsBtn").addEventListener("click", generateReelsScript);
+      document.getElementById("copyReelsBtn").addEventListener("click", copyReelsText);
       document.querySelectorAll(".pass-btn").forEach((btn) => {
         btn.addEventListener("click", () => passPick(Number(btn.dataset.pass)));
       });
+    }
+
+    function buildClientReelsText(data) {
+      const places = [data.top_pick, ...(data.alternatives || [])].slice(0, 3);
+      const area = data.area || "내 주변";
+      const query = data.query || "맛집";
+      const sitLabel = data.situation_label || "추천";
+      const slots = ["2~6초", "6~10초", "10~14초"];
+      const lines = [
+        `🎬 [${query} 지도 #1] ${area}에서 실패 없는 딱 3곳`,
+        "",
+        `[0~2초 훅] ${area}에서 ${query} 어디 갈지 10분 넘게 고른다면 저장하세요. (${sitLabel} 기준)`,
+        "",
+      ];
+      places.forEach((p, idx) => {
+        const role = p.role_badge || (idx === 0 ? "종합 1위" : `대안 ${idx}`);
+        lines.push(`[${slots[idx] || "10~14초"} | ${idx + 1}. ${p.name} (${role})]`);
+        lines.push(`  🎙️ ${idx + 1}번째, ${p.name}. ${p.reason || ""}`);
+        if (p.price_note) lines.push(`  💰 ${p.price_note}`);
+        if (p.caution_note) lines.push(`  ${p.caution_note}`);
+      });
+      lines.push(
+        "",
+        `[14~18초 엔딩 CTA] 다음 #2편은 댓글에 가장 많이 나온 동네로 갑니다! 내 동네 놓치지 않으려면 팔로우해 두세요.`,
+        "",
+        `#${area.replace(/\s+/g, "")}맛집 #${query.replace(/\s+/g, "")} #맛집추천`
+      );
+      return lines.join("\n");
+    }
+
+    async function generateReelsScript() {
+      if (!lastData) return;
+      const box = document.getElementById("reelsBox");
+      const pre = document.getElementById("reelsPre");
+      box.style.display = "block";
+      pre.textContent = "대본 생성 중...";
+      const apiBase = resolveApiBase();
+      const isStaticHost = location.hostname.endsWith("github.io") || location.protocol === "file:";
+      if (Boolean(apiBase) || !isStaticHost) {
+        try {
+          const res = await fetch(`${apiBase}/api/reels-script`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              query: lastData.query,
+              area: lastData.area === "내 주변" || lastData.area === "내 위치 주변" ? "" : lastData.area,
+              situation: currentSituation,
+              provider: currentProvider,
+              lat: currentLat,
+              lng: currentLng,
+              episode: 1,
+            }),
+          });
+          if (res.ok) {
+            const scriptData = await res.json();
+            pre.textContent = scriptData.full_text;
+            return;
+          }
+        } catch {}
+      }
+      pre.textContent = buildClientReelsText(lastData);
+    }
+
+    async function copyReelsText() {
+      const pre = document.getElementById("reelsPre");
+      const btn = document.getElementById("copyReelsBtn");
+      try {
+        await navigator.clipboard.writeText(pre.textContent);
+        btn.textContent = "✅ 릴스 대본 복사 완료!";
+        setTimeout(() => { btn.textContent = "📋 릴스 대본 전체 복사"; }, 2000);
+      } catch {
+        btn.textContent = "복사 권한이 없어 직접 선택해 주세요";
+      }
     }
 
     async function copySummary() {

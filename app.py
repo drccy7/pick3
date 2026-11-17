@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 
 from providers import ProviderType, SituationType, get_kakao_diag, get_recommendations
+from reels_script import build_reels_script
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -112,3 +113,20 @@ async def recommend(payload: RecommendRequest) -> dict:
         lat=payload.lat,
         lng=payload.lng,
     )
+
+
+class ReelsScriptRequest(RecommendRequest):
+    episode: int = 1
+
+
+@app.post("/api/reels-script")
+async def reels_script(payload: ReelsScriptRequest) -> dict:
+    rec = await get_recommendations(
+        query=payload.query,
+        situation=payload.situation,
+        area=payload.area,
+        provider=payload.provider,
+        lat=payload.lat,
+        lng=payload.lng,
+    )
+    return build_reels_script(rec, episode=max(1, payload.episode))
