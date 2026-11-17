@@ -658,10 +658,48 @@ async def _naver_get(
     return resp
 
 
+_WON_RE = re.compile(r"(\d{1,3}(?:,\d{3})+|\d{4,6})\s*원")
+_MAN_RE = re.compile(r"(\d+(?:\.\d+)?)\s*만\s*(?:(\d)\s*천)?\s*원?")
+
+
+def _extract_avg_krw_price(text: str) -> int | None:
+    """Extract realistic single-person meal prices (5,000~150,000 KRW) and return rounded median."""
+    prices: list[int] = []
+    for m in _WON_RE.finditer(text):
+        val = int(m.group(1).replace(",", ""))
+        if 5000 <= val <= 150000:
+            prices.append(val)
+    for m in _MAN_RE.finditer(text):
+        val = int(float(m.group(1)) * 10000 + (int(m.group(2)) * 1000 if m.group(2) else 0))
+        if 5000 <= val <= 150000:
+            prices.append(val)
+    if not prices:
+        return None
+    prices.sort()
+    mid = prices[len(prices) // 2]
+    return int(round(mid / 1000.0) * 1000)
+
+
+_DEFAULT_MENU_PRICE_HINT: dict[str, str] = {
+    "돼지갈비": "1인 평균 1.8~2.5만 원대 (일반 시세)",
+    "삼겹살": "1인 평균 1.8~2.5만 원대 (일반 시세)",
+    "국밥": "1인 평균 1.0~1.2만 원대 (일반 시세)",
+    "파스타": "1인 평균 1.5~2.5만 원대 (일반 시세)",
+    "소바": "1인 평균 1.0~1.4만 원대 (일반 시세)",
+}
+
+
+def _default_price_hint(query: str) -> str:
+    for k, hint in _DEFAULT_MENU_PRICE_HINT.items():
+        if k in query or query in k:
+            return hint
+    return "1인 비용 지도에서 확인"
+
+
 async def _fetch_naver_blog_signals(
     name: str, area: str, situation: SituationType, client_id: str, client_secret: str
-) -> tuple[bool, list[str]]:
-    """Check Naver Blog snippets for closed-restaurant signals and situation highlights."""
+) -> tuple[bool, list[str], int | None]:
+    """Check Naver Blog snippets for closed-restaurant signals, highlights, and per-person price."""
     q = f"{area} {name}".strip() if area and area not in name else name
     try:
         async with httpx.AsyncClient(timeout=3.5) as client:
@@ -675,16 +713,16 @@ async def _fetch_naver_blog_signals(
             _LAST_NAVER_DIAG["status"] = resp.status_code
             if resp.status_code != 200:
                 _LAST_NAVER_DIAG["error"] = resp.text[:200]
-                return False, []
+                return False, [], None
             _LAST_NAVER_DIAG["error"] = None
             items = resp.json().get("items", [])
     except Exception as exc:
         _LAST_NAVER_DIAG["status"] = -1
         _LAST_NAVER_DIAG["error"] = str(exc)[:200]
-        return False, []
+        return False, [], None
 
     if not items:
-        return False, []
+        return False, [], None
 
     combined = " ".join(
         f"{_strip_html(it.get('title', ''))} {_strip_html(it.get('description', ''))}"
@@ -695,7 +733,8 @@ async def _fetch_naver_blog_signals(
 
     keywords = _SITUATION_KEYWORDS[situation] + ["가성비", "주차", "웨이팅"]
     matched = [kw for kw in keywords if kw in combined]
-    return is_likely_closed, matched[:3]
+    avg_price = _extract_avg_krw_price(combined)
+    return is_likely_closed, matched[:3], avg_price
 
 
 _SITUATION_COPY: dict[SituationType, str] = {
@@ -765,14 +804,19 @@ async def _enrich_and_filter_with_naver(
         if isinstance(res, Exception):
             alive.append(pick)
             continue
-        is_closed, matched_kw = res
+        is_closed, matched_kw, avg_price = res
         updated = pick
         if matched_kw:
             phrases = _humanize_keywords(matched_kw)[:2]
             new_tags = list(dict.fromkeys([*pick.service_tags, *phrases]))[:4]
             base_reason = _SITUATION_COPY[situation] if not pick.rating else pick.reason
             new_reason = f"{base_reason} · {', '.join(phrases)}"
-            updated = replace(pick, reason=new_reason, service_tags=new_tags)
+            updated = replace(updated, reason=new_reason, service_tags=new_tags)
+        if avg_price is not None:
+            price_label = f"1인 약 {avg_price:,}원 (후기 기준)"
+            if updated.rating:
+                price_label = f"{price_label} · ⭐ {updated.rating:.1f}"
+            updated = replace(updated, price_note=price_label)
         if is_closed:
             closed_backup.append(replace(updated, open_status="⚠️ 최근 폐업 의심(확인 필요)"))
         else:
@@ -839,7 +883,7 @@ async def _fetch_naver_local(
                 category=cat,
                 area=addr,
                 reason=f"{_SITUATION_COPY[situation]} (주변 인기 매장)",
-                price_note="메뉴·가격은 지도에서 확인",
+                price_note=_default_price_hint(query),
                 service_tags=[cat, sit_label],
                 open_status="영업시간 지도 확인",
                 naver_map_url=naver_url,
@@ -866,7 +910,7 @@ async def _fetch_google_places(
         "X-Goog-FieldMask": (
             "places.displayName,places.formattedAddress,places.rating,"
             "places.userRatingCount,places.googleMapsUri,places.businessStatus,"
-            "places.currentOpeningHours.openNow,places.reviews.text"
+            "places.priceLevel,places.currentOpeningHours.openNow,places.reviews.text"
         ),
     }
     body: dict[str, object] = {
@@ -955,7 +999,14 @@ async def _fetch_google_places(
         naver_url, kakao_url = _build_map_urls(name, area)
         google_url = p.get("googleMapsUri") or ""
 
-        rating_str = f"⭐ {rating:.1f} (리뷰 {count:,}개)" if rating else "평점 정보 없음"
+        _GOOGLE_PRICE_MAP = {
+            "PRICE_LEVEL_INEXPENSIVE": "1인 1만 원대",
+            "PRICE_LEVEL_MODERATE": "1인 2~3만 원대",
+            "PRICE_LEVEL_EXPENSIVE": "1인 4만 원 이상",
+            "PRICE_LEVEL_VERY_EXPENSIVE": "1인 6만 원 이상",
+        }
+        g_price = _GOOGLE_PRICE_MAP.get(p.get("priceLevel", ""), _default_price_hint(query))
+        rating_str = f"{g_price} · ⭐ {rating:.1f} ({count:,}명)" if rating else g_price
         phrases = _humanize_keywords(matched_kw)[:2]
         if phrases:
             reason = f"⭐ {rating:.1f} ({count:,}명) · {', '.join(phrases)}"
@@ -1053,7 +1104,7 @@ async def _fetch_kakao_local(
                 category=cat,
                 area=addr,
                 reason=f"{_SITUATION_COPY[situation]} (주변 인기 매장)",
-                price_note="메뉴·가격은 지도에서 확인",
+                price_note=_default_price_hint(query),
                 service_tags=[cat, sit_label],
                 open_status="영업시간 지도 확인",
                 naver_map_url=naver_url,
