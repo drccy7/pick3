@@ -629,21 +629,44 @@ def _strip_html(text: str) -> str:
     return _HTML_TAG_RE.sub("", text).replace("&quot;", '"').replace("&amp;", "&").strip()
 
 
+async def _naver_get(
+    client: httpx.AsyncClient,
+    endpoint: str,
+    params: dict[str, object],
+    client_id: str,
+    client_secret: str,
+) -> httpx.Response:
+    """Call NAVER API HUB first (NCP keys), falling back to legacy openapi.naver.com on 401/403."""
+    ncp_url = f"https://naverapihub.apigw.ntruss.com/search/v1/{endpoint}"
+    ncp_headers = {
+        "X-NCP-APIGW-API-KEY-ID": client_id,
+        "X-NCP-APIGW-API-KEY": client_secret,
+    }
+    resp = await client.get(ncp_url, headers=ncp_headers, params=params)
+    if resp.status_code not in (401, 403):
+        return resp
+
+    legacy_url = f"https://openapi.naver.com/v1/search/{endpoint}.json"
+    legacy_headers = {
+        "X-Naver-Client-Id": client_id,
+        "X-Naver-Client-Secret": client_secret,
+    }
+    return await client.get(legacy_url, headers=legacy_headers, params=params)
+
+
 async def _fetch_naver_blog_signals(
     name: str, area: str, situation: SituationType, client_id: str, client_secret: str
 ) -> tuple[bool, list[str]]:
     """Check Naver Blog snippets for closed-restaurant signals and situation highlights."""
     q = f"{area} {name}".strip() if area and area not in name else name
-    headers = {
-        "X-Naver-Client-Id": client_id,
-        "X-Naver-Client-Secret": client_secret,
-    }
     try:
         async with httpx.AsyncClient(timeout=3.5) as client:
-            resp = await client.get(
-                "https://openapi.naver.com/v1/search/blog.json",
-                headers=headers,
-                params={"query": q, "display": 5, "sort": "date"},
+            resp = await _naver_get(
+                client,
+                "blog",
+                {"query": q, "display": 5, "sort": "date"},
+                client_id,
+                client_secret,
             )
             _LAST_NAVER_DIAG["status"] = resp.status_code
             if resp.status_code != 200:
@@ -718,16 +741,14 @@ async def _fetch_naver_local(
     """Query Naver Local Search API (returns up to 5 local results)."""
     hint = _KAKAO_SITUATION_HINT[situation]
     keyword = f"{area} {query}".strip() if area else query
-    headers = {
-        "X-Naver-Client-Id": client_id,
-        "X-Naver-Client-Secret": client_secret,
-    }
     try:
         async with httpx.AsyncClient(timeout=4.0) as client:
-            resp = await client.get(
-                "https://openapi.naver.com/v1/search/local.json",
-                headers=headers,
-                params={"query": f"{keyword} {hint}", "display": 5, "sort": "comment"},
+            resp = await _naver_get(
+                client,
+                "local",
+                {"query": f"{keyword} {hint}", "display": 5, "sort": "comment"},
+                client_id,
+                client_secret,
             )
             _LAST_NAVER_DIAG["status"] = resp.status_code
             if resp.status_code != 200:
@@ -735,10 +756,12 @@ async def _fetch_naver_local(
                 return None
             items = resp.json().get("items", [])
             if len(items) < 3:
-                resp2 = await client.get(
-                    "https://openapi.naver.com/v1/search/local.json",
-                    headers=headers,
-                    params={"query": keyword, "display": 5, "sort": "comment"},
+                resp2 = await _naver_get(
+                    client,
+                    "local",
+                    {"query": keyword, "display": 5, "sort": "comment"},
+                    client_id,
+                    client_secret,
                 )
                 if resp2.status_code == 200:
                     seen = {it.get("title") for it in items}
