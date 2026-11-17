@@ -680,21 +680,17 @@ def _extract_avg_krw_price(text: str) -> int | None:
     return int(round(mid / 1000.0) * 1000)
 
 
-def _format_manwon(won: int) -> str:
-    """Format KRW integer as concise Korean currency (e.g. 18000 -> '1.8만원', 20000 -> '2만원')."""
-    if won % 10000 == 0:
-        return f"{won // 10000}만원"
-    if won >= 10000:
-        return f"{won / 10000:.1f}만원"
+def _format_krw(won: int) -> str:
+    """Format KRW integer cleanly (e.g. 18000 -> '18,000원')."""
     return f"{won:,}원"
 
 
 _DEFAULT_MENU_PRICE_HINT: dict[str, str] = {
-    "돼지갈비": "1인 약 1.8~2.5만원",
-    "삼겹살": "1인 약 1.8~2.5만원",
-    "국밥": "1인 약 1~1.2만원",
-    "파스타": "1인 약 1.5~2.5만원",
-    "소바": "1인 약 1~1.4만원",
+    "돼지갈비": "1인 약 18,000~25,000원",
+    "삼겹살": "1인 약 18,000~25,000원",
+    "국밥": "1인 약 10,000~12,000원",
+    "파스타": "1인 약 15,000~25,000원",
+    "소바": "1인 약 10,000~14,000원",
 }
 
 
@@ -822,7 +818,7 @@ async def _enrich_and_filter_with_naver(
             new_reason = f"{base_reason} · {', '.join(phrases)}"
             updated = replace(updated, reason=new_reason, service_tags=new_tags)
         if avg_price is not None:
-            price_label = f"1인 약 {_format_manwon(avg_price)}"
+            price_label = f"1인 약 {_format_krw(avg_price)}"
             if updated.rating:
                 price_label = f"{price_label} · ⭐ {updated.rating:.1f}"
             updated = replace(updated, price_note=price_label)
@@ -1009,10 +1005,10 @@ async def _fetch_google_places(
         google_url = p.get("googleMapsUri") or ""
 
         _GOOGLE_PRICE_MAP = {
-            "PRICE_LEVEL_INEXPENSIVE": "1인 1만원대",
-            "PRICE_LEVEL_MODERATE": "1인 2~3만원대",
-            "PRICE_LEVEL_EXPENSIVE": "1인 4만원+",
-            "PRICE_LEVEL_VERY_EXPENSIVE": "1인 6만원+",
+            "PRICE_LEVEL_INEXPENSIVE": "1만 원대",
+            "PRICE_LEVEL_MODERATE": "2~3만 원대",
+            "PRICE_LEVEL_EXPENSIVE": "4만 원 이상",
+            "PRICE_LEVEL_VERY_EXPENSIVE": "6만 원 이상",
         }
         g_price = _GOOGLE_PRICE_MAP.get(p.get("priceLevel", ""), _default_price_hint(query))
         rating_str = f"{g_price} · ⭐ {rating:.1f}" if rating else g_price
