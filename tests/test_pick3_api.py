@@ -502,4 +502,4 @@ def test_closed_restaurants_filtered_by_google_status_and_naver_blog(
     assert "구글 폐업식당" not in names
     assert "블로그 폐업식당" not in names
     assert names == ["정상 영업식당 A", "정상 영업식당 B", "정상 영업식당 C"]
-    assert "블로그 후기" in body["top_pick"]["reason"]
+    assert "직원 구이" in body["top_pick"]["reason"] or "룸 좌석 있음" in body["top_pick"]["reason"]

@@ -698,6 +698,49 @@ async def _fetch_naver_blog_signals(
     return is_likely_closed, matched[:3]
 
 
+_SITUATION_COPY: dict[SituationType, str] = {
+    "solo": "혼자 부담 없이 빠르게 식사하기 좋은 곳",
+    "date": "둘이서 편하게 식사·대화하기 좋은 곳",
+    "group": "여럿이 함께 모이기 좋은 곳",
+}
+
+_KEYWORD_PHRASES: dict[str, str] = {
+    "혼자": "혼밥 편함",
+    "혼밥": "혼밥 추천",
+    "1인": "1인 식사 가능",
+    "점심": "점심 식사 인기",
+    "빠르": "회전 빠름",
+    "간단": "간편 식사",
+    "바테이블": "바 좌석 보유",
+    "바 좌석": "바 좌석 보유",
+    "구워": "직원 구이",
+    "분위기": "분위기 좋음",
+    "데이트": "데이트 인기",
+    "친절": "응대 친절",
+    "깔끔": "매장 깔끔함",
+    "인테리어": "인테리어 우수",
+    "조용": "조용한 분위기",
+    "룸": "룸 좌석 있음",
+    "단체": "단체석 가능",
+    "회식": "회식 추천",
+    "주차": "주차 가능",
+    "넓": "좌석 여유",
+    "모임": "모임 적합",
+    "예약": "예약 가능",
+    "가성비": "가성비 좋음",
+    "웨이팅": "웨이팅 참고",
+}
+
+
+def _humanize_keywords(keywords: list[str]) -> list[str]:
+    phrases: list[str] = []
+    for kw in keywords:
+        label = _KEYWORD_PHRASES.get(kw, kw)
+        if label not in phrases:
+            phrases.append(label)
+    return phrases
+
+
 async def _enrich_and_filter_with_naver(
     picks: list[RestaurantPick], area: str, situation: SituationType
 ) -> list[RestaurantPick]:
@@ -725,11 +768,13 @@ async def _enrich_and_filter_with_naver(
         is_closed, matched_kw = res
         updated = pick
         if matched_kw:
-            new_tags = list(dict.fromkeys([*pick.service_tags, *[f"네이버#{k}" for k in matched_kw[:2]]]))[:4]
-            new_reason = f"{pick.reason} · 블로그 후기 '{', '.join(matched_kw[:2])}' 확인"
+            phrases = _humanize_keywords(matched_kw)[:2]
+            new_tags = list(dict.fromkeys([*pick.service_tags, *phrases]))[:4]
+            base_reason = _SITUATION_COPY[situation] if not pick.rating else pick.reason
+            new_reason = f"{base_reason} · {', '.join(phrases)}"
             updated = replace(pick, reason=new_reason, service_tags=new_tags)
         if is_closed:
-            closed_backup.append(replace(updated, open_status="⚠️ 블로그 폐업/종료 의심(확인 필요)"))
+            closed_backup.append(replace(updated, open_status="⚠️ 최근 폐업 의심(확인 필요)"))
         else:
             alive.append(updated)
 
@@ -793,9 +838,9 @@ async def _fetch_naver_local(
                 name=name,
                 category=cat,
                 area=addr,
-                reason=f"네이버 지역 검색 리뷰/코멘트 상위 ({sit_label})",
-                price_note="상세 메뉴/가격은 지도 확인",
-                service_tags=[cat, sit_label, "네이버 로컬"],
+                reason=f"{_SITUATION_COPY[situation]} (주변 인기 매장)",
+                price_note="메뉴·가격은 지도에서 확인",
+                service_tags=[cat, sit_label],
                 open_status="영업시간 지도 확인",
                 naver_map_url=naver_url,
                 kakao_map_url=kakao_url,
@@ -911,14 +956,13 @@ async def _fetch_google_places(
         google_url = p.get("googleMapsUri") or ""
 
         rating_str = f"⭐ {rating:.1f} (리뷰 {count:,}개)" if rating else "평점 정보 없음"
-        if matched_kw:
-            reason = f"구글 평점 {rating:.1f}({count:,}명) · 리뷰에 '{', '.join(matched_kw[:2])}' 언급 확인"
+        phrases = _humanize_keywords(matched_kw)[:2]
+        if phrases:
+            reason = f"⭐ {rating:.1f} ({count:,}명) · {', '.join(phrases)}"
         else:
-            reason = f"구글 평점 {rating:.1f}({count:,}명) · {sit_label} 기준 평점 상위 추천"
+            reason = f"⭐ {rating:.1f} ({count:,}명) · {_SITUATION_COPY[situation]}"
 
-        tags = [f"평점 {rating:.1f}" if rating else "구글 검색", f"리뷰 {count:,}", sit_label]
-        if matched_kw:
-            tags.append(f"#{matched_kw[0]} 언급")
+        tags = [f"평점 {rating:.1f}" if rating else "구글 검색", f"리뷰 {count:,}", sit_label, *phrases]
 
         picks.append(
             RestaurantPick(
@@ -1008,9 +1052,9 @@ async def _fetch_kakao_local(
                 name=name,
                 category=cat,
                 area=addr,
-                reason=f"카카오 로컬 '{hint}' 키워드·정확도 상위 매칭 ({sit_label})",
-                price_note="메뉴/평점은 지도 상세 확인",
-                service_tags=[cat, sit_label, "실시간 검색 결과"],
+                reason=f"{_SITUATION_COPY[situation]} (주변 인기 매장)",
+                price_note="메뉴·가격은 지도에서 확인",
+                service_tags=[cat, sit_label],
                 open_status="영업시간 지도 확인",
                 naver_map_url=naver_url,
                 kakao_map_url=kakao_url,
