@@ -377,3 +377,129 @@ def test_provider_selection_routes_kakao_or_google(monkeypatch: pytest.MonkeyPat
     assert res.status_code == 200
     assert res.json()["data_source"] == "kakao_local_api"
     assert res.json()["top_pick"]["name"] == "카카오 갈비 1"
+
+
+def test_closed_restaurants_filtered_by_google_status_and_naver_blog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+
+    class FakeResp:
+        def __init__(self, payload: dict) -> None:
+            self.status_code = 200
+            self.text = "ok"
+            self._payload = payload
+
+        def json(self) -> dict:
+            return self._payload
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            pass
+
+        async def post(self, *args, **kwargs):
+            return FakeResp(
+                {
+                    "places": [
+                        {
+                            "displayName": {"text": "구글 폐업식당"},
+                            "formattedAddress": "대한민국 서울 강남구 역삼동 1",
+                            "rating": 5.0,
+                            "userRatingCount": 500,
+                            "businessStatus": "CLOSED_PERMANENTLY",
+                            "googleMapsUri": "https://maps.google.com/?cid=1",
+                            "reviews": [],
+                        },
+                        {
+                            "displayName": {"text": "블로그 폐업식당"},
+                            "formattedAddress": "대한민국 서울 강남구 역삼동 2",
+                            "rating": 4.9,
+                            "userRatingCount": 200,
+                            "businessStatus": "OPERATIONAL",
+                            "googleMapsUri": "https://maps.google.com/?cid=2",
+                            "reviews": [],
+                        },
+                        {
+                            "displayName": {"text": "정상 영업식당 A"},
+                            "formattedAddress": "대한민국 서울 강남구 역삼동 3",
+                            "rating": 4.7,
+                            "userRatingCount": 150,
+                            "businessStatus": "OPERATIONAL",
+                            "googleMapsUri": "https://maps.google.com/?cid=3",
+                            "reviews": [],
+                        },
+                        {
+                            "displayName": {"text": "정상 영업식당 B"},
+                            "formattedAddress": "대한민국 서울 강남구 역삼동 4",
+                            "rating": 4.6,
+                            "userRatingCount": 120,
+                            "businessStatus": "OPERATIONAL",
+                            "googleMapsUri": "https://maps.google.com/?cid=4",
+                            "reviews": [],
+                        },
+                        {
+                            "displayName": {"text": "정상 영업식당 C"},
+                            "formattedAddress": "대한민국 서울 강남구 역삼동 5",
+                            "rating": 4.5,
+                            "userRatingCount": 100,
+                            "businessStatus": "OPERATIONAL",
+                            "googleMapsUri": "https://maps.google.com/?cid=5",
+                            "reviews": [],
+                        },
+                    ]
+                }
+            )
+
+        async def get(self, url: str, **kwargs):
+            q = (kwargs.get("params") or {}).get("query", "")
+            if "블로그 폐업식당" in q:
+                return FakeResp(
+                    {
+                        "items": [
+                            {
+                                "title": "블로그 폐업식당 영업종료 후기",
+                                "description": "아쉽게도 최근 폐업해서 문 닫았습니다.",
+                            }
+                        ]
+                    }
+                )
+            return FakeResp(
+                {
+                    "items": [
+                        {
+                            "title": "정상 식당 후기",
+                            "description": "직원이 구워주고 룸도 있어서 회식 추천!",
+                        }
+                    ]
+                }
+            )
+
+    monkeypatch.setenv("GOOGLE_PLACES_API_KEY", "fake_google_key")
+    monkeypatch.setenv("NAVER_CLIENT_ID", "fake_naver_id")
+    monkeypatch.setenv("NAVER_CLIENT_SECRET", "fake_naver_secret")
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+    res = client.post(
+        "/api/recommend",
+        json={
+            "query": "돼지갈비",
+            "situation": "group",
+            "area": "강남",
+            "provider": "google",
+            "lat": 37.498,
+            "lng": 127.027,
+        },
+    )
+    assert res.status_code == 200
+    body = res.json()
+    names = [body["top_pick"]["name"]] + [a["name"] for a in body["alternatives"]]
+    assert "구글 폐업식당" not in names
+    assert "블로그 폐업식당" not in names
+    assert names == ["정상 영업식당 A", "정상 영업식당 B", "정상 영업식당 C"]
+    assert "블로그 후기" in body["top_pick"]["reason"]

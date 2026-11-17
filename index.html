@@ -141,12 +141,59 @@
     }
     .provider-row {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(4, 1fr);
       gap: 6px;
       margin-top: 10px;
       padding-top: 10px;
       border-top: 1px solid var(--border);
     }
+    .area-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .area-chip {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      color: var(--muted);
+      padding: 5px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .area-chip.active {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      color: #ffb195;
+    }
+    .compare-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 15px;
+      padding: 12px 13px;
+      margin-bottom: 12px;
+    }
+    .compare-title {
+      font-size: 12px;
+      font-weight: 800;
+      color: var(--accent);
+      margin-bottom: 8px;
+    }
+    .compare-row {
+      display: grid;
+      grid-template-columns: 42px 1fr auto;
+      gap: 8px;
+      align-items: center;
+      padding: 6px 0;
+      border-top: 1px solid rgba(255,255,255,0.05);
+      font-size: 12px;
+    }
+    .compare-row:first-of-type { border-top: none; }
+    .compare-rank { font-weight: 800; color: var(--text); }
+    .compare-name { font-weight: 700; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .compare-meta { color: #ffd166; font-weight: 700; font-size: 11px; white-space: nowrap; }
     .prov-btn {
       background: var(--surface-2);
       border: 1px solid var(--border);
@@ -271,6 +318,14 @@
         <input id="areaInput" class="area-input" type="text" placeholder="동네 (선택)" />
         <button type="button" class="go-btn" id="searchBtn">찾기</button>
       </div>
+      <div class="area-chips" id="areaChips">
+        <button type="button" class="area-chip" id="gpsBtn">📍 내 위치</button>
+        <button type="button" class="area-chip" data-area="강남">강남</button>
+        <button type="button" class="area-chip" data-area="성수">성수</button>
+        <button type="button" class="area-chip" data-area="홍대">홍대</button>
+        <button type="button" class="area-chip" data-area="여의도">여의도</button>
+        <button type="button" class="area-chip" data-area="광화문">광화문</button>
+      </div>
       <div class="chips" id="menuChips"></div>
       <div id="errorBox" class="error-box"></div>
     </section>
@@ -292,8 +347,9 @@
         </button>
       </div>
       <div class="provider-row" id="providerRow">
-        <button type="button" class="prov-btn active" data-prov="kakao">카카오 로컬 (무료)</button>
+        <button type="button" class="prov-btn active" data-prov="kakao">카카오 (무료)</button>
         <button type="button" class="prov-btn" data-prov="google">구글 평점순</button>
+        <button type="button" class="prov-btn" data-prov="naver">네이버 로컬</button>
         <button type="button" class="prov-btn" data-prov="auto">자동 추천</button>
       </div>
     </section>
@@ -410,6 +466,8 @@
 
     let currentSituation = "solo";
     let currentProvider = "kakao";
+    let currentLat = null;
+    let currentLng = null;
     let lastData = null;
 
     function showError(msg) {
@@ -506,6 +564,8 @@
               area,
               situation: currentSituation,
               provider: currentProvider,
+              lat: currentLat,
+              lng: currentLng,
             }),
           });
           if (res.ok) {
@@ -550,16 +610,43 @@
           ? "실시간 구글 평점순"
           : data.data_source === "kakao_local_api"
           ? "실시간 카카오 로컬"
+          : data.data_source === "naver_local_api"
+          ? "실시간 네이버 로컬"
           : data.data_source === "curated_sample"
           ? "큐레이션 샘플 데이터"
           : "지도 실검색 가이드";
       const sourceText = data.cached ? `${baseSourceText} · ⚡캐시` : baseSourceText;
+
+      const allThree = [top, ...alts];
+      const compareRows = allThree
+        .map((item, idx) => {
+          const badge = idx === 0 ? "🥇1위" : idx === 1 ? "🥈2위" : "🥉3위";
+          const shortMeta = item.rating
+            ? `⭐${item.rating.toFixed(1)} (${item.review_count || 0})`
+            : item.open_status.includes("중")
+            ? "🟢영업중"
+            : item.open_status.includes("폐업")
+            ? "⚠️폐업의심"
+            : item.category;
+          return `
+            <div class="compare-row">
+              <span class="compare-rank">${badge}</span>
+              <span class="compare-name">${escapeHtml(item.name)}</span>
+              <span class="compare-meta">${escapeHtml(shortMeta)}</span>
+            </div>
+          `;
+        })
+        .join("");
 
       let html = `
         <div class="meta-bar">
           <span>기준: ${escapeHtml(data.criteria)}</span>
           <span class="badge-source">${sourceText}</span>
         </div>
+        <section class="compare-box">
+          <div class="compare-title">⚡ 2초 한눈에 비교 (${escapeHtml(data.area)} · ${escapeHtml(data.query)})</div>
+          ${compareRows}
+        </section>
         <article class="top-card">
           <span class="rank-pill">🥇 지금 바로 1순위</span>
           <div class="place-name"><a class="place-link" href="${top.kakao_map_url}" target="_blank" rel="noopener">${escapeHtml(top.name)} ↗</a></div>
@@ -734,6 +821,56 @@
         fetchRecommendation();
       }
     });
+    areaInput.addEventListener("input", () => {
+      if (areaInput.value.trim()) {
+        currentLat = null;
+        currentLng = null;
+        document.getElementById("gpsBtn").classList.remove("active");
+      }
+      document.querySelectorAll(".area-chip[data-area]").forEach((c) => {
+        c.classList.toggle("active", c.dataset.area === areaInput.value.trim());
+      });
+    });
+
+    document.querySelectorAll(".area-chip[data-area]").forEach((chip) => {
+      chip.addEventListener("click", () => {
+        currentLat = null;
+        currentLng = null;
+        document.getElementById("gpsBtn").classList.remove("active");
+        const nextArea = chip.dataset.area;
+        areaInput.value = areaInput.value.trim() === nextArea ? "" : nextArea;
+        document.querySelectorAll(".area-chip[data-area]").forEach((c) => {
+          c.classList.toggle("active", c.dataset.area === areaInput.value.trim());
+        });
+        fetchRecommendation();
+      });
+    });
+
+    document.getElementById("gpsBtn").addEventListener("click", () => {
+      const gpsBtn = document.getElementById("gpsBtn");
+      if (!navigator.geolocation) {
+        showError("이 브라우저는 위치 정보를 지원하지 않습니다.");
+        return;
+      }
+      gpsBtn.textContent = "📍 확인 중...";
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          currentLat = pos.coords.latitude;
+          currentLng = pos.coords.longitude;
+          areaInput.value = "";
+          document.querySelectorAll(".area-chip[data-area]").forEach((c) => c.classList.remove("active"));
+          gpsBtn.classList.add("active");
+          gpsBtn.textContent = "📍 내 위치 적용됨";
+          fetchRecommendation();
+        },
+        () => {
+          gpsBtn.textContent = "📍 내 위치";
+          showError("위치 권한이 거부되었거나 가져올 수 없습니다. 동네를 직접 입력해 주세요.");
+        },
+        { enableHighAccuracy: false, timeout: 6000, maximumAge: 60000 }
+      );
+    });
+
     areaInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter") fetchRecommendation();
     });

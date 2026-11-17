@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
+import re
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Literal
 from urllib.parse import quote
 
 import httpx
 
 SituationType = Literal["solo", "date", "group"]
-ProviderType = Literal["auto", "google", "kakao"]
+ProviderType = Literal["auto", "google", "kakao", "naver"]
 
 _CACHE_TTL_SECONDS = 6 * 3600  # 6 hours to prevent redundant paid API calls
 _CACHE_MAX_ENTRIES = 500
@@ -43,12 +45,15 @@ def _set_cached_result(key: tuple[str, str, str, str], data: dict) -> None:
 
 _LAST_KAKAO_DIAG: dict[str, object] = {"status": None, "error": None}
 _LAST_GOOGLE_DIAG: dict[str, object] = {"status": None, "error": None}
+_LAST_NAVER_DIAG: dict[str, object] = {"status": None, "error": None}
 
 
 def get_kakao_diag() -> dict[str, object]:
     """Return non-secret external API status diagnostics."""
     kakao_key = os.getenv("KAKAO_REST_API_KEY", "").strip()
     google_key = os.getenv("GOOGLE_PLACES_API_KEY", "").strip()
+    naver_id = os.getenv("NAVER_CLIENT_ID", "").strip()
+    naver_secret = os.getenv("NAVER_CLIENT_SECRET", "").strip()
     return {
         "google_key_configured": bool(google_key),
         "google_last_status": _LAST_GOOGLE_DIAG["status"],
@@ -56,6 +61,9 @@ def get_kakao_diag() -> dict[str, object]:
         "kakao_key_configured": bool(kakao_key),
         "last_status": _LAST_KAKAO_DIAG["status"],
         "last_error": _LAST_KAKAO_DIAG["error"],
+        "naver_key_configured": bool(naver_id and naver_secret),
+        "naver_last_status": _LAST_NAVER_DIAG["status"],
+        "naver_last_error": _LAST_NAVER_DIAG["error"],
     }
 
 
@@ -613,26 +621,195 @@ _KAKAO_SITUATION_HINT: dict[SituationType, str] = {
 }
 
 
-async def _fetch_google_places(
-    query: str, area: str, situation: SituationType, api_key: str
+_CLOSED_PATTERNS = ("폐업", "영업종료", "영업 종료", "폐점", "문 닫았", "없어졌")
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _strip_html(text: str) -> str:
+    return _HTML_TAG_RE.sub("", text).replace("&quot;", '"').replace("&amp;", "&").strip()
+
+
+async def _fetch_naver_blog_signals(
+    name: str, area: str, situation: SituationType, client_id: str, client_secret: str
+) -> tuple[bool, list[str]]:
+    """Check Naver Blog snippets for closed-restaurant signals and situation highlights."""
+    q = f"{area} {name}".strip() if area and area not in name else name
+    headers = {
+        "X-Naver-Client-Id": client_id,
+        "X-Naver-Client-Secret": client_secret,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=3.5) as client:
+            resp = await client.get(
+                "https://openapi.naver.com/v1/search/blog.json",
+                headers=headers,
+                params={"query": q, "display": 5, "sort": "date"},
+            )
+            _LAST_NAVER_DIAG["status"] = resp.status_code
+            if resp.status_code != 200:
+                _LAST_NAVER_DIAG["error"] = resp.text[:200]
+                return False, []
+            _LAST_NAVER_DIAG["error"] = None
+            items = resp.json().get("items", [])
+    except Exception as exc:
+        _LAST_NAVER_DIAG["status"] = -1
+        _LAST_NAVER_DIAG["error"] = str(exc)[:200]
+        return False, []
+
+    if not items:
+        return False, []
+
+    combined = " ".join(
+        f"{_strip_html(it.get('title', ''))} {_strip_html(it.get('description', ''))}"
+        for it in items
+    )
+    closed_hits = sum(1 for pat in _CLOSED_PATTERNS if pat in combined)
+    is_likely_closed = closed_hits >= 2 or ("폐업" in combined and "맛집" not in combined)
+
+    keywords = _SITUATION_KEYWORDS[situation] + ["가성비", "주차", "웨이팅"]
+    matched = [kw for kw in keywords if kw in combined]
+    return is_likely_closed, matched[:3]
+
+
+async def _enrich_and_filter_with_naver(
+    picks: list[RestaurantPick], area: str, situation: SituationType
+) -> list[RestaurantPick]:
+    """Filter out closed restaurants and enrich picks with Naver Blog signals when keys exist."""
+    naver_id = os.getenv("NAVER_CLIENT_ID", "").strip()
+    naver_secret = os.getenv("NAVER_CLIENT_SECRET", "").strip()
+    if not (naver_id and naver_secret) or not picks:
+        return picks[:3]
+
+    candidates = picks[:6]
+    results = await asyncio.gather(
+        *[
+            _fetch_naver_blog_signals(p.name, area, situation, naver_id, naver_secret)
+            for p in candidates
+        ],
+        return_exceptions=True,
+    )
+
+    alive: list[RestaurantPick] = []
+    closed_backup: list[RestaurantPick] = []
+    for pick, res in zip(candidates, results):
+        if isinstance(res, Exception):
+            alive.append(pick)
+            continue
+        is_closed, matched_kw = res
+        updated = pick
+        if matched_kw:
+            new_tags = list(dict.fromkeys([*pick.service_tags, *[f"네이버#{k}" for k in matched_kw[:2]]]))[:4]
+            new_reason = f"{pick.reason} · 블로그 후기 '{', '.join(matched_kw[:2])}' 확인"
+            updated = replace(pick, reason=new_reason, service_tags=new_tags)
+        if is_closed:
+            closed_backup.append(replace(updated, open_status="⚠️ 블로그 폐업/종료 의심(확인 필요)"))
+        else:
+            alive.append(updated)
+
+    final_picks = alive[:3]
+    if len(final_picks) < 3:
+        final_picks.extend(closed_backup[: 3 - len(final_picks)])
+    return final_picks
+
+
+async def _fetch_naver_local(
+    query: str, area: str, situation: SituationType, client_id: str, client_secret: str
 ) -> list[RestaurantPick] | None:
-    """Query Google Places API (New) and rank by situation fit + rating + review count."""
+    """Query Naver Local Search API (returns up to 5 local results)."""
+    hint = _KAKAO_SITUATION_HINT[situation]
+    keyword = f"{area} {query}".strip() if area else query
+    headers = {
+        "X-Naver-Client-Id": client_id,
+        "X-Naver-Client-Secret": client_secret,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            resp = await client.get(
+                "https://openapi.naver.com/v1/search/local.json",
+                headers=headers,
+                params={"query": f"{keyword} {hint}", "display": 5, "sort": "comment"},
+            )
+            _LAST_NAVER_DIAG["status"] = resp.status_code
+            if resp.status_code != 200:
+                _LAST_NAVER_DIAG["error"] = resp.text[:200]
+                return None
+            items = resp.json().get("items", [])
+            if len(items) < 3:
+                resp2 = await client.get(
+                    "https://openapi.naver.com/v1/search/local.json",
+                    headers=headers,
+                    params={"query": keyword, "display": 5, "sort": "comment"},
+                )
+                if resp2.status_code == 200:
+                    seen = {it.get("title") for it in items}
+                    for it in resp2.json().get("items", []):
+                        if it.get("title") not in seen:
+                            items.append(it)
+            _LAST_NAVER_DIAG["error"] = None
+    except Exception as exc:
+        _LAST_NAVER_DIAG["status"] = -1
+        _LAST_NAVER_DIAG["error"] = str(exc)[:200]
+        return None
+
+    if not items:
+        return None
+
+    sit_label = _SITUATION_META[situation]["label"]
+    picks: list[RestaurantPick] = []
+    for item in items[:5]:
+        name = _strip_html(item.get("title", "상호 미상"))
+        addr = item.get("roadAddress") or item.get("address") or area or "위치 확인"
+        cat = (item.get("category") or query).split(">")[-1].strip() or query
+        naver_url, kakao_url = _build_map_urls(name, area)
+        picks.append(
+            RestaurantPick(
+                name=name,
+                category=cat,
+                area=addr,
+                reason=f"네이버 지역 검색 리뷰/코멘트 상위 ({sit_label})",
+                price_note="상세 메뉴/가격은 지도 확인",
+                service_tags=[cat, sit_label, "네이버 로컬"],
+                open_status="영업시간 지도 확인",
+                naver_map_url=naver_url,
+                kakao_map_url=kakao_url,
+                is_verified_detail=False,
+            )
+        )
+    return picks
+
+
+async def _fetch_google_places(
+    query: str,
+    area: str,
+    situation: SituationType,
+    api_key: str,
+    lat: float | None = None,
+    lng: float | None = None,
+) -> list[RestaurantPick] | None:
+    """Query Google Places API (New), filter closed places, and rank by situation + rating."""
     text_query = f"{area} {query}".strip() if area else query
     headers = {
         "Content-Type": "application/json",
         "X-Goog-Api-Key": api_key,
         "X-Goog-FieldMask": (
             "places.displayName,places.formattedAddress,places.rating,"
-            "places.userRatingCount,places.googleMapsUri,"
+            "places.userRatingCount,places.googleMapsUri,places.businessStatus,"
             "places.currentOpeningHours.openNow,places.reviews.text"
         ),
     }
-    body = {
+    body: dict[str, object] = {
         "textQuery": text_query,
         "languageCode": "ko",
         "regionCode": "KR",
         "maxResultCount": 12,
     }
+    if lat is not None and lng is not None:
+        body["locationBias"] = {
+            "circle": {
+                "center": {"latitude": lat, "longitude": lng},
+                "radius": 1500.0,
+            }
+        }
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.post(
@@ -653,6 +830,15 @@ async def _fetch_google_places(
 
     if not places:
         return None
+
+    # Filter out permanently/temporarily closed places from Google Places status.
+    open_places = [
+        p
+        for p in places
+        if p.get("businessStatus") not in ("CLOSED_PERMANENTLY", "CLOSED_TEMPORARILY")
+    ]
+    if open_places:
+        places = open_places
 
     # Prefer places whose formattedAddress matches the requested area (prevents out-of-area
     # restaurants with the area name in their title, e.g. "본강남갈비 인천논현본점").
@@ -686,7 +872,7 @@ async def _fetch_google_places(
 
     sit_label = _SITUATION_META[situation]["label"]
     picks: list[RestaurantPick] = []
-    for _, _, rating, count, p, matched_kw in scored[:3]:
+    for _, _, rating, count, p, matched_kw in scored[:6]:
         name = (p.get("displayName") or {}).get("text") or "상호 미상"
         addr = p.get("formattedAddress") or area or "위치 확인"
         addr = addr.removeprefix("대한민국 ").strip()
@@ -728,7 +914,12 @@ async def _fetch_google_places(
 
 
 async def _fetch_kakao_local(
-    query: str, area: str, situation: SituationType, api_key: str
+    query: str,
+    area: str,
+    situation: SituationType,
+    api_key: str,
+    lat: float | None = None,
+    lng: float | None = None,
 ) -> list[RestaurantPick] | None:
     """Query Kakao Local API when KAKAO_REST_API_KEY is configured."""
     base_kw = f"{area} {query}".strip() if area else query
@@ -739,12 +930,21 @@ async def _fetch_kakao_local(
     seen_ids: set[str] = set()
     try:
         async with httpx.AsyncClient(timeout=4.0) as client:
-            # First try situation-boosted query, then fill from base query up to 3 unique places.
+            # Fetch up to 6 unique candidates so closed-restaurant filtering still leaves 3.
             for kw in (f"{base_kw} {hint}", base_kw):
+                params: dict[str, object] = {
+                    "query": kw,
+                    "category_group_code": "FD6",
+                    "size": 6,
+                }
+                if lat is not None and lng is not None:
+                    params["x"] = str(lng)
+                    params["y"] = str(lat)
+                    params["radius"] = 1500
                 resp = await client.get(
                     "https://dapi.kakao.com/v2/local/search/keyword.json",
                     headers=headers,
-                    params={"query": kw, "category_group_code": "FD6", "size": 6},
+                    params=params,
                 )
                 _LAST_KAKAO_DIAG["status"] = resp.status_code
                 if resp.status_code != 200:
@@ -756,9 +956,9 @@ async def _fetch_kakao_local(
                     if pid and pid not in seen_ids:
                         seen_ids.add(pid)
                         docs.append(item)
-                    if len(docs) >= 3:
+                    if len(docs) >= 6:
                         break
-                if len(docs) >= 3:
+                if len(docs) >= 6:
                     break
     except Exception as exc:
         _LAST_KAKAO_DIAG["status"] = -1
@@ -770,7 +970,7 @@ async def _fetch_kakao_local(
 
     sit_label = _SITUATION_META[situation]["label"]
     picks: list[RestaurantPick] = []
-    for item in docs[:3]:
+    for item in docs[:6]:
         name = item.get("place_name", "상호 미상")
         addr = item.get("road_address_name") or item.get("address_name") or area or "위치 확인"
         cat = item.get("category_name", query).split(">")[-1].strip() or query
@@ -794,12 +994,18 @@ async def _fetch_kakao_local(
 
 
 async def get_recommendations(
-    query: str, situation: SituationType, area: str = "", provider: ProviderType = "kakao"
+    query: str,
+    situation: SituationType,
+    area: str = "",
+    provider: ProviderType = "kakao",
+    lat: float | None = None,
+    lng: float | None = None,
 ) -> dict:
     """Return exactly 1 top pick + up to 2 alternatives (max 3 total) with 6h TTL cache."""
     clean_query = query.strip()
     clean_area = area.strip()
-    cache_key = (provider, clean_query.lower(), clean_area.lower(), situation)
+    geo_key = f"{round(lat, 3)},{round(lng, 3)}" if (lat is not None and lng is not None) else ""
+    cache_key = (provider, clean_query.lower(), f"{clean_area.lower()}@{geo_key}", situation)
 
     cached = _get_cached_result(cache_key)
     if cached is not None:
@@ -809,46 +1015,76 @@ async def get_recommendations(
     # Google Places (paid/credit-limited) runs when user explicitly picks "google" or as fallback.
     kakao_key = os.getenv("KAKAO_REST_API_KEY", "").strip()
     google_key = os.getenv("GOOGLE_PLACES_API_KEY", "").strip()
+    naver_id = os.getenv("NAVER_CLIENT_ID", "").strip()
+    naver_secret = os.getenv("NAVER_CLIENT_SECRET", "").strip()
 
     order = (
-        ("google", "kakao")
+        ("google", "kakao", "naver")
         if provider == "google"
+        else ("naver", "kakao")
+        if provider == "naver"
         else ("kakao",)
         if provider == "kakao"
-        else ("kakao", "google")
+        else ("kakao", "naver", "google")
     )
 
     for engine in order:
         if engine == "kakao" and kakao_key:
-            live_picks = await _fetch_kakao_local(clean_query, clean_area, situation, kakao_key)
+            live_picks = await _fetch_kakao_local(
+                clean_query, clean_area, situation, kakao_key, lat=lat, lng=lng
+            )
             if live_picks:
+                final_picks = await _enrich_and_filter_with_naver(live_picks, clean_area, situation)
                 result = {
                     "query": clean_query,
-                    "area": clean_area or "내 주변",
+                    "area": clean_area or ("내 위치 주변" if lat is not None else "내 주변"),
                     "situation": situation,
                     "situation_label": _SITUATION_META[situation]["label"],
                     "criteria": _SITUATION_META[situation]["criteria"],
                     "data_source": "kakao_local_api",
                     "cached": False,
-                    "top_pick": live_picks[0].to_dict(),
-                    "alternatives": [p.to_dict() for p in live_picks[1:3]],
+                    "top_pick": final_picks[0].to_dict(),
+                    "alternatives": [p.to_dict() for p in final_picks[1:3]],
+                }
+                _set_cached_result(cache_key, result)
+                return result
+
+        if engine == "naver" and naver_id and naver_secret:
+            naver_picks = await _fetch_naver_local(
+                clean_query, clean_area, situation, naver_id, naver_secret
+            )
+            if naver_picks:
+                final_picks = await _enrich_and_filter_with_naver(naver_picks, clean_area, situation)
+                result = {
+                    "query": clean_query,
+                    "area": clean_area or ("내 위치 주변" if lat is not None else "내 주변"),
+                    "situation": situation,
+                    "situation_label": _SITUATION_META[situation]["label"],
+                    "criteria": _SITUATION_META[situation]["criteria"],
+                    "data_source": "naver_local_api",
+                    "cached": False,
+                    "top_pick": final_picks[0].to_dict(),
+                    "alternatives": [p.to_dict() for p in final_picks[1:3]],
                 }
                 _set_cached_result(cache_key, result)
                 return result
 
         if engine == "google" and google_key:
-            google_picks = await _fetch_google_places(clean_query, clean_area, situation, google_key)
+            google_picks = await _fetch_google_places(
+                clean_query, clean_area, situation, google_key, lat=lat, lng=lng
+            )
             if google_picks:
+                final_picks = await _enrich_and_filter_with_naver(google_picks, clean_area, situation)
                 result = {
                     "query": clean_query,
-                    "area": clean_area or "내 주변",
+                    "area": clean_area or ("내 위치 주변" if lat is not None else "내 주변"),
                     "situation": situation,
                     "situation_label": _SITUATION_META[situation]["label"],
                     "criteria": f"{_SITUATION_META[situation]['criteria']} · 구글 평점순",
                     "data_source": "google_places_api",
                     "cached": False,
-                    "top_pick": google_picks[0].to_dict(),
-                    "alternatives": [p.to_dict() for p in google_picks[1:3]],
+                    "top_pick": final_picks[0].to_dict(),
+                    "alternatives": [p.to_dict() for p in final_picks[1:3]],
                 }
                 _set_cached_result(cache_key, result)
                 return result

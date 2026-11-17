@@ -42,6 +42,8 @@ class RecommendRequest(BaseModel):
     situation: SituationType
     area: str = ""
     provider: ProviderType = "kakao"
+    lat: float | None = None
+    lng: float | None = None
 
     @field_validator("query")
     @classmethod
@@ -91,4 +93,6 @@ async def recommend(payload: RecommendRequest) -> dict:
         situation=payload.situation,
         area=payload.area,
         provider=payload.provider,
+        lat=payload.lat,
+        lng=payload.lng,
     )
