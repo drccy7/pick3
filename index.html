@@ -621,7 +621,9 @@
       const compareRows = allThree
         .map((item, idx) => {
           const badge = idx === 0 ? "🥇1위" : idx === 1 ? "🥈2위" : "🥉3위";
-          const shortMeta = item.rating
+          const shortMeta = item.price_note && !item.price_note.includes("확인")
+            ? item.price_note
+            : item.rating
             ? `⭐${item.rating.toFixed(1)} (${item.review_count || 0})`
             : item.open_status.includes("중")
             ? "🟢영업중"
