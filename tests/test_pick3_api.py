@@ -562,3 +562,29 @@ def test_kakao_distance_walk_time_phone_and_reserve_picks(monkeypatch: pytest.Mo
     assert body["top_pick"]["distance_text"] == "320m (도보 4분)"
     assert body["top_pick"]["phone"] == "02-1234-5678"
     assert len(body["reserve_picks"]) == 2
+    # Weak value/experience evidence -> falls back honestly to "가까운 대안"
+    assert body["alternatives"][0]["role_badge"] == "가까운 대안"
+
+
+def test_role_badges_use_evidence_when_present_and_fallback_when_weak() -> None:
+    import providers
+
+    with_evidence = providers._assign_role_badges(
+        [
+            providers.RestaurantPick("1위", "갈비", "강남", "종합 1위", "", [], "", "", ""),
+            providers.RestaurantPick("2위", "갈비", "강남", "가성비 좋고 점심특선 있음", "", [], "", "", ""),
+            providers.RestaurantPick("3위", "갈비", "강남", "직원 구이와 분위기 좋음", "", [], "", "", ""),
+        ]
+    )
+    assert with_evidence[1].role_badge == "가성비 추천"
+    assert with_evidence[2].role_badge == "만족·분위기 추천"
+
+    weak_evidence = providers._assign_role_badges(
+        [
+            providers.RestaurantPick("1위", "갈비", "강남", "인기", "", [], "", "", ""),
+            providers.RestaurantPick("2위", "갈비", "강남", "인기", "", [], "", "", "", review_count=120),
+            providers.RestaurantPick("3위", "갈비", "강남", "인기", "", [], "", "", ""),
+        ]
+    )
+    assert weak_evidence[1].role_badge == "리뷰 검증 대안"
+    assert weak_evidence[2].role_badge == ""

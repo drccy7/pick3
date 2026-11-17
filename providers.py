@@ -84,6 +84,7 @@ class RestaurantPick:
     google_maps_url: str = ""
     phone: str = ""
     distance_text: str = ""
+    role_badge: str = ""
     rating: float | None = None
     review_count: int | None = None
     is_verified_detail: bool = True
@@ -801,6 +802,34 @@ def _humanize_keywords(keywords: list[str]) -> list[str]:
     return phrases
 
 
+_VALUE_SIGNALS = ("가성비", "저렴", "특선", "1인 정식", "1만원", "백반")
+_EXPERIENCE_SIGNALS = ("직원 구이", "그릴링", "분위기", "룸", "친절", "인테리어", "조용", "오픈키친")
+
+
+def _assign_role_badges(picks: list[RestaurantPick]) -> list[RestaurantPick]:
+    """Assign evidence-based role badges; never fabricate value/experience labels."""
+    if not picks:
+        return picks
+    assigned: list[RestaurantPick] = [picks[0]]
+    used_value = False
+    used_exp = False
+    for p in picks[1:]:
+        haystack = f"{p.reason} {' '.join(p.service_tags)} {p.price_note}"
+        badge = ""
+        if not used_value and any(sig in haystack for sig in _VALUE_SIGNALS):
+            badge = "가성비 추천"
+            used_value = True
+        elif not used_exp and any(sig in haystack for sig in _EXPERIENCE_SIGNALS):
+            badge = "만족·분위기 추천"
+            used_exp = True
+        elif p.distance_text:
+            badge = "가까운 대안"
+        elif (p.review_count or 0) >= 50:
+            badge = "리뷰 검증 대안"
+        assigned.append(replace(p, role_badge=badge))
+    return assigned
+
+
 async def _enrich_and_filter_with_naver(
     picks: list[RestaurantPick], area: str, situation: SituationType
 ) -> list[RestaurantPick]:
@@ -808,7 +837,7 @@ async def _enrich_and_filter_with_naver(
     naver_id = os.getenv("NAVER_CLIENT_ID", "").strip()
     naver_secret = os.getenv("NAVER_CLIENT_SECRET", "").strip()
     if not (naver_id and naver_secret) or not picks:
-        return picks[:6]
+        return _assign_role_badges(picks[:6])
 
     candidates = picks[:6]
     results = await asyncio.gather(
@@ -844,7 +873,7 @@ async def _enrich_and_filter_with_naver(
     final_picks = alive[:6]
     if len(final_picks) < 3:
         final_picks.extend(closed_backup[: 3 - len(final_picks)])
-    return final_picks
+    return _assign_role_badges(final_picks)
 
 
 async def _fetch_naver_local(
@@ -1273,6 +1302,7 @@ async def get_recommendations(
         picks = _build_dynamic_fallback(clean_query, clean_area, situation)
         source = "dynamic_map_search"
 
+    picks = _assign_role_badges(picks)
     return {
         "query": clean_query,
         "area": clean_area or "내 주변",

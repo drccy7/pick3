@@ -700,11 +700,12 @@
 
       alts.forEach((item, idx) => {
         const medal = idx === 0 ? "🥈 대안 1" : "🥉 대안 2";
+        const roleLabel = item.role_badge ? `${medal} · ${escapeHtml(item.role_badge)}` : medal;
         const altDist = item.distance_text ? ` · 🚶 ${escapeHtml(item.distance_text)}` : "";
         html += `
           <article class="alt-card">
             <div class="alt-head">
-              <span class="alt-rank">${medal}</span>
+              <span class="alt-rank">${roleLabel}</span>
               <div style="display:flex;align-items:center;gap:8px;">
                 <span class="place-sub">${escapeHtml(item.area)}${altDist}</span>
                 <button type="button" class="pass-btn" data-pass="${idx + 1}">✕ 패스</button>
