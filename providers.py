@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import re
 import time
@@ -81,12 +82,34 @@ class RestaurantPick:
     naver_map_url: str
     kakao_map_url: str
     google_maps_url: str = ""
+    phone: str = ""
+    distance_text: str = ""
     rating: float | None = None
     review_count: int | None = None
     is_verified_detail: bool = True
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+def _format_walk_distance(meters: int | float | None) -> str:
+    """Format meter distance as human-friendly walking time (~80m/min)."""
+    if meters is None or meters <= 0:
+        return ""
+    m = int(round(meters))
+    mins = max(1, int(round(m / 80.0)))
+    if m < 1000:
+        return f"{m}m (도보 {mins}분)"
+    return f"{m / 1000:.1f}km (도보 {mins}분)"
+
+
+def _haversine_meters(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    r = 6371000.0
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lng2 - lng1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    return 2 * r * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
 def _build_map_urls(name: str, area: str) -> tuple[str, str]:
@@ -785,7 +808,7 @@ async def _enrich_and_filter_with_naver(
     naver_id = os.getenv("NAVER_CLIENT_ID", "").strip()
     naver_secret = os.getenv("NAVER_CLIENT_SECRET", "").strip()
     if not (naver_id and naver_secret) or not picks:
-        return picks[:3]
+        return picks[:6]
 
     candidates = picks[:6]
     results = await asyncio.gather(
@@ -818,7 +841,7 @@ async def _enrich_and_filter_with_naver(
         else:
             alive.append(updated)
 
-    final_picks = alive[:3]
+    final_picks = alive[:6]
     if len(final_picks) < 3:
         final_picks.extend(closed_backup[: 3 - len(final_picks)])
     return final_picks
@@ -906,6 +929,7 @@ async def _fetch_google_places(
         "X-Goog-FieldMask": (
             "places.displayName,places.formattedAddress,places.rating,"
             "places.userRatingCount,places.googleMapsUri,places.businessStatus,"
+            "places.nationalPhoneNumber,places.location,"
             "places.priceLevel,places.currentOpeningHours.openNow,places.reviews.text"
         ),
     }
@@ -994,6 +1018,13 @@ async def _fetch_google_places(
         )
         naver_url, kakao_url = _build_map_urls(name, area)
         google_url = p.get("googleMapsUri") or ""
+        phone = str(p.get("nationalPhoneNumber") or "").strip()
+        loc = p.get("location") or {}
+        dist_text = ""
+        if lat is not None and lng is not None and loc.get("latitude") and loc.get("longitude"):
+            dist_text = _format_walk_distance(
+                _haversine_meters(lat, lng, float(loc["latitude"]), float(loc["longitude"]))
+            )
 
         rating_str = f"⭐ {rating:.1f} (리뷰 {count:,}개)" if rating else _default_price_hint(query)
         phrases = _humanize_keywords(matched_kw)[:2]
@@ -1016,6 +1047,8 @@ async def _fetch_google_places(
                 naver_map_url=naver_url,
                 kakao_map_url=kakao_url,
                 google_maps_url=google_url,
+                phone=phone,
+                distance_text=dist_text,
                 rating=rating or None,
                 review_count=count or None,
                 is_verified_detail=True,
@@ -1087,6 +1120,9 @@ async def _fetch_kakao_local(
         cat = item.get("category_name", query).split(">")[-1].strip() or query
         naver_url, _ = _build_map_urls(name, area)
         kakao_url = item.get("place_url") or _build_map_urls(name, area)[1]
+        phone = str(item.get("phone") or "").strip()
+        raw_dist = item.get("distance")
+        dist_text = _format_walk_distance(int(raw_dist)) if raw_dist and str(raw_dist).isdigit() else ""
         picks.append(
             RestaurantPick(
                 name=name,
@@ -1098,6 +1134,8 @@ async def _fetch_kakao_local(
                 open_status="영업시간 지도 확인",
                 naver_map_url=naver_url,
                 kakao_map_url=kakao_url,
+                phone=phone,
+                distance_text=dist_text,
                 is_verified_detail=False,
             )
         )
@@ -1156,6 +1194,7 @@ async def get_recommendations(
                     "cached": False,
                     "top_pick": final_picks[0].to_dict(),
                     "alternatives": [p.to_dict() for p in final_picks[1:3]],
+                    "reserve_picks": [p.to_dict() for p in final_picks[3:6]],
                 }
                 _set_cached_result(cache_key, result)
                 return result
@@ -1176,6 +1215,7 @@ async def get_recommendations(
                     "cached": False,
                     "top_pick": final_picks[0].to_dict(),
                     "alternatives": [p.to_dict() for p in final_picks[1:3]],
+                    "reserve_picks": [p.to_dict() for p in final_picks[3:6]],
                 }
                 _set_cached_result(cache_key, result)
                 return result
@@ -1196,6 +1236,7 @@ async def get_recommendations(
                     "cached": False,
                     "top_pick": final_picks[0].to_dict(),
                     "alternatives": [p.to_dict() for p in final_picks[1:3]],
+                    "reserve_picks": [p.to_dict() for p in final_picks[3:6]],
                 }
                 _set_cached_result(cache_key, result)
                 return result

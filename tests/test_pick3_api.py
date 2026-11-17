@@ -505,3 +505,60 @@ def test_closed_restaurants_filtered_by_google_status_and_naver_blog(
     assert names == ["정상 영업식당 A", "정상 영업식당 B", "정상 영업식당 C"]
     assert "직원 구이" in body["top_pick"]["reason"] or "룸 좌석 있음" in body["top_pick"]["reason"]
     assert "돼지갈비 18,000원 (2026년 기준)" in body["top_pick"]["price_note"]
+
+
+def test_kakao_distance_walk_time_phone_and_reserve_picks(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    class FakeResp:
+        status_code = 200
+        text = "ok"
+
+        def json(self) -> dict:
+            return {
+                "documents": [
+                    {
+                        "id": str(i),
+                        "place_name": f"거리 테스트 식당 {i}",
+                        "road_address_name": f"서울 강남구 역삼로 {i}",
+                        "category_name": "음식점 > 한식",
+                        "place_url": f"http://place.map.kakao.com/{i}",
+                        "phone": "02-1234-5678" if i == 1 else "",
+                        "distance": "320" if i == 1 else "800",
+                    }
+                    for i in range(1, 6)
+                ]
+            }
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            pass
+
+        async def get(self, *args, **kwargs):
+            return FakeResp()
+
+    monkeypatch.setenv("KAKAO_REST_API_KEY", "fake_kakao_key")
+    monkeypatch.delenv("NAVER_CLIENT_ID", raising=False)
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+    res = client.post(
+        "/api/recommend",
+        json={
+            "query": "돼지갈비",
+            "situation": "solo",
+            "provider": "kakao",
+            "lat": 37.498,
+            "lng": 127.027,
+        },
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["top_pick"]["distance_text"] == "320m (도보 4분)"
+    assert body["top_pick"]["phone"] == "02-1234-5678"
+    assert len(body["reserve_picks"]) == 2

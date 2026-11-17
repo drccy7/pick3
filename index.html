@@ -276,6 +276,19 @@
     .btn-naver { background: var(--naver); color: #081c10; }
     .btn-kakao { background: var(--kakao); color: #191919; }
     .btn-google { background: #3b82f6; color: #fff; }
+    .btn-call { background: #2c3342; color: #f3f5f8; border: 1px solid #3f485c; }
+    .card-top-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .pass-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 999px;
+      cursor: pointer;
+    }
+    .pass-btn:hover { color: #fff; border-color: var(--accent); }
     .alt-card {
       background: var(--surface);
       border: 1px solid var(--border);
@@ -589,17 +602,35 @@
     }
 
     function renderMapButtons(item) {
-      const cols = item.google_maps_url ? "1fr 1fr 1fr" : "1fr 1fr";
-      const gBtn = item.google_maps_url
-        ? `<a class="btn-map btn-google" href="${item.google_maps_url}" target="_blank" rel="noopener">구글 지도</a>`
-        : "";
-      return `
-        <div class="actions" style="grid-template-columns:${cols}">
-          <a class="btn-map btn-naver" href="${item.naver_map_url}" target="_blank" rel="noopener">네이버 지도</a>
-          <a class="btn-map btn-kakao" href="${item.kakao_map_url}" target="_blank" rel="noopener">카카오맵</a>
-          ${gBtn}
-        </div>
-      `;
+      const buttons = [
+        `<a class="btn-map btn-naver" href="${item.naver_map_url}" target="_blank" rel="noopener">네이버 지도</a>`,
+        `<a class="btn-map btn-kakao" href="${item.kakao_map_url}" target="_blank" rel="noopener">카카오맵</a>`,
+      ];
+      if (item.google_maps_url) {
+        buttons.push(`<a class="btn-map btn-google" href="${item.google_maps_url}" target="_blank" rel="noopener">구글 지도</a>`);
+      }
+      if (item.phone) {
+        buttons.push(`<a class="btn-map btn-call" href="tel:${escapeHtml(item.phone)}">📞 전화</a>`);
+      }
+      const cols = buttons.length <= 2 ? "1fr 1fr" : buttons.length === 3 ? "1fr 1fr 1fr" : "1fr 1fr";
+      return `<div class="actions" style="grid-template-columns:${cols}">${buttons.join("")}</div>`;
+    }
+
+    function passPick(index) {
+      if (!lastData) return;
+      const list = [lastData.top_pick, ...(lastData.alternatives || [])];
+      const reserves = lastData.reserve_picks || [];
+      if (reserves.length > 0) {
+        list.splice(index, 1);
+        list.push(reserves.shift());
+        lastData.reserve_picks = reserves;
+      } else if (list.length > 1) {
+        const [removed] = list.splice(index, 1);
+        list.push(removed);
+      }
+      lastData.top_pick = list[0];
+      lastData.alternatives = list.slice(1, 3);
+      renderResult(lastData);
     }
 
     function renderResult(data) {
@@ -621,7 +652,9 @@
       const compareRows = allThree
         .map((item, idx) => {
           const badge = idx === 0 ? "🥇1위" : idx === 1 ? "🥈2위" : "🥉3위";
-          const shortMeta = item.price_note && !item.price_note.includes("확인")
+          const shortMeta = item.distance_text
+            ? `🚶${item.distance_text}`
+            : item.price_note && !item.price_note.includes("확인")
             ? item.price_note
             : item.rating
             ? `⭐${item.rating.toFixed(1)} (${item.review_count || 0})`
@@ -640,6 +673,8 @@
         })
         .join("");
 
+      const topDist = top.distance_text ? ` · 🚶 ${escapeHtml(top.distance_text)}` : "";
+
       let html = `
         <div class="meta-bar">
           <span>기준: ${escapeHtml(data.criteria)}</span>
@@ -650,9 +685,12 @@
           ${compareRows}
         </section>
         <article class="top-card">
-          <span class="rank-pill">🥇 지금 바로 1순위</span>
+          <div class="card-top-row">
+            <span class="rank-pill">🥇 지금 바로 1순위</span>
+            <button type="button" class="pass-btn" data-pass="0">✕ 패스</button>
+          </div>
           <div class="place-name"><a class="place-link" href="${top.kakao_map_url}" target="_blank" rel="noopener">${escapeHtml(top.name)} ↗</a></div>
-          <div class="place-sub">${escapeHtml(top.category)} · ${escapeHtml(top.area)} · ${escapeHtml(top.open_status)}</div>
+          <div class="place-sub">${escapeHtml(top.category)} · ${escapeHtml(top.area)} · ${escapeHtml(top.open_status)}${topDist}</div>
           <div class="reason">${escapeHtml(top.reason)}</div>
           <div class="price-line">💰 ${escapeHtml(top.price_note)}</div>
           <div class="tags">${renderTags(top.service_tags)}</div>
@@ -662,11 +700,15 @@
 
       alts.forEach((item, idx) => {
         const medal = idx === 0 ? "🥈 대안 1" : "🥉 대안 2";
+        const altDist = item.distance_text ? ` · 🚶 ${escapeHtml(item.distance_text)}` : "";
         html += `
           <article class="alt-card">
             <div class="alt-head">
               <span class="alt-rank">${medal}</span>
-              <span class="place-sub">${escapeHtml(item.area)}</span>
+              <div style="display:flex;align-items:center;gap:8px;">
+                <span class="place-sub">${escapeHtml(item.area)}${altDist}</span>
+                <button type="button" class="pass-btn" data-pass="${idx + 1}">✕ 패스</button>
+              </div>
             </div>
             <div class="alt-name"><a class="place-link" href="${item.kakao_map_url}" target="_blank" rel="noopener">${escapeHtml(item.name)} ↗</a></div>
             <div class="place-sub">${escapeHtml(item.price_note)}</div>
@@ -681,6 +723,9 @@
       resultArea.innerHTML = html;
 
       document.getElementById("copyShareBtn").addEventListener("click", copySummary);
+      document.querySelectorAll(".pass-btn").forEach((btn) => {
+        btn.addEventListener("click", () => passPick(Number(btn.dataset.pass)));
+      });
     }
 
     async function copySummary() {
