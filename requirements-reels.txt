@@ -1,0 +1,4 @@
+edge-tts>=6.1.0
+imageio-ffmpeg>=0.5.1
+# Optional for millisecond-level Whisper word timestamps:
+# faster-whisper>=1.0.0

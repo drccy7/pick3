@@ -1,0 +1,346 @@
+"""Screenshot ingestion (Gemini Vision -> Kakao Local) and saved-places recall for Pick3."""
+
+from __future__ import annotations
+
+import base64
+import json
+import os
+import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
+
+import httpx
+
+from providers import RestaurantPick, _build_map_urls, _format_walk_distance, _haversine_meters
+
+BASE_DIR = Path(__file__).resolve().parent
+DEFAULT_DB_PATH = BASE_DIR / "saved_places.db"
+
+
+def _get_db_path() -> Path:
+    custom = os.getenv("PICK3_SQLITE_PATH", "").strip()
+    return Path(custom) if custom else DEFAULT_DB_PATH
+
+
+def _init_sqlite(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pick3_saved_places (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            area TEXT NOT NULL DEFAULT '',
+            address TEXT NOT NULL DEFAULT '',
+            category TEXT NOT NULL DEFAULT '',
+            signature_menu TEXT NOT NULL DEFAULT '',
+            memo TEXT NOT NULL DEFAULT '',
+            lat REAL,
+            lng REAL,
+            phone TEXT NOT NULL DEFAULT '',
+            kakao_url TEXT NOT NULL DEFAULT '',
+            naver_url TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+
+
+async def extract_place_from_image(image_bytes: bytes, mime_type: str = "image/jpeg") -> dict:
+    """Use Gemini 2.5 Flash Vision to extract restaurant info from an Instagram screenshot."""
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY is not configured.")
+
+    b64 = base64.b64encode(image_bytes).decode("ascii")
+    prompt = (
+        "이 인스타그램 스크린샷에서 음식점/카페 정보를 추출해 JSON으로만 답하세요. "
+        '형식: {"name": "상호명", "area": "동네/역(예: 강남, 성수)", '
+        '"category": "음식종류(예: 돼지갈비, 파스타)", '
+        '"signature_menu": "대표메뉴 또는 특징", "memo": "웨이팅/주차/분위기 한줄 메모"}. '
+        "상호명을 찾을 수 없으면 name을 빈 문자열로 두세요."
+    )
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"gemini-2.5-flash:generateContent?key={api_key}"
+    )
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": prompt},
+                    {"inline_data": {"mime_type": mime_type or "image/jpeg", "data": b64}},
+                ]
+            }
+        ],
+        "generationConfig": {"responseMimeType": "application/json", "temperature": 0.1},
+    }
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.post(url, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+
+    text = (
+        data.get("candidates", [{}])[0]
+        .get("content", {})
+        .get("parts", [{}])[0]
+        .get("text", "{}")
+    )
+    parsed = json.loads(text)
+    if isinstance(parsed, list):
+        parsed = parsed[0] if parsed else {}
+    return {
+        "name": str(parsed.get("name") or "").strip(),
+        "area": str(parsed.get("area") or "").strip(),
+        "category": str(parsed.get("category") or "맛집").strip(),
+        "signature_menu": str(parsed.get("signature_menu") or "").strip(),
+        "memo": str(parsed.get("memo") or "").strip(),
+    }
+
+
+async def resolve_place_with_kakao(extracted: dict) -> dict:
+    """Resolve extracted restaurant name + area to exact Kakao coordinates and map links."""
+    name = extracted["name"]
+    area = extracted["area"]
+    naver_url, kakao_url = _build_map_urls(name, area)
+    resolved = {
+        **extracted,
+        "address": area or "위치 확인",
+        "lat": None,
+        "lng": None,
+        "phone": "",
+        "kakao_url": kakao_url,
+        "naver_url": naver_url,
+    }
+
+    kakao_key = os.getenv("KAKAO_REST_API_KEY", "").strip()
+    if not kakao_key or not name:
+        return resolved
+
+    kw = f"{area} {name}".strip()
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            resp = await client.get(
+                "https://dapi.kakao.com/v2/local/search/keyword.json",
+                headers={"Authorization": f"KakaoAK {kakao_key}"},
+                params={"query": kw, "category_group_code": "FD6", "size": 3},
+            )
+            if resp.status_code == 200:
+                docs = resp.json().get("documents", [])
+                if docs:
+                    top = docs[0]
+                    resolved["name"] = top.get("place_name") or name
+                    resolved["address"] = top.get("road_address_name") or top.get("address_name") or resolved["address"]
+                    resolved["lat"] = float(top["y"]) if top.get("y") else None
+                    resolved["lng"] = float(top["x"]) if top.get("x") else None
+                    resolved["phone"] = str(top.get("phone") or "").strip()
+                    resolved["kakao_url"] = top.get("place_url") or kakao_url
+                    resolved["naver_url"] = _build_map_urls(resolved["name"], area)[0]
+    except Exception:
+        pass
+    return resolved
+
+
+def _supabase_headers() -> tuple[str, dict[str, str]] | None:
+    url = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+    key = os.getenv("SUPABASE_KEY", "").strip()
+    if not (url and key):
+        return None
+    return url, {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation",
+    }
+
+
+async def save_place(place: dict) -> dict:
+    """Persist saved place to Supabase (if configured) or local SQLite."""
+    row = {
+        "name": place["name"],
+        "area": place.get("area", ""),
+        "address": place.get("address", ""),
+        "category": place.get("category", "맛집"),
+        "signature_menu": place.get("signature_menu", ""),
+        "memo": place.get("memo", ""),
+        "lat": place.get("lat"),
+        "lng": place.get("lng"),
+        "phone": place.get("phone", ""),
+        "kakao_url": place.get("kakao_url", ""),
+        "naver_url": place.get("naver_url", ""),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    sb = _supabase_headers()
+    if sb:
+        base_url, headers = sb
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                # Avoid duplicate insert by name + address
+                check = await client.get(
+                    f"{base_url}/rest/v1/pick3_saved_places",
+                    headers=headers,
+                    params={"name": f"eq.{row['name']}", "limit": "1"},
+                )
+                if check.status_code == 200 and check.json():
+                    return {**check.json()[0], "storage": "supabase", "duplicate": True}
+                ins = await client.post(
+                    f"{base_url}/rest/v1/pick3_saved_places",
+                    headers=headers,
+                    json=row,
+                )
+                if ins.status_code in (200, 201):
+                    saved = ins.json()[0] if isinstance(ins.json(), list) else row
+                    return {**saved, "storage": "supabase", "duplicate": False}
+        except Exception:
+            pass
+
+    db_path = _get_db_path()
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        _init_sqlite(conn)
+        existing = conn.execute(
+            "SELECT * FROM pick3_saved_places WHERE name = ? AND address = ? LIMIT 1",
+            (row["name"], row["address"]),
+        ).fetchone()
+        if existing:
+            return {**dict(existing), "storage": "sqlite", "duplicate": True}
+        cur = conn.execute(
+            """
+            INSERT INTO pick3_saved_places
+            (name, area, address, category, signature_menu, memo, lat, lng, phone, kakao_url, naver_url, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                row["name"],
+                row["area"],
+                row["address"],
+                row["category"],
+                row["signature_menu"],
+                row["memo"],
+                row["lat"],
+                row["lng"],
+                row["phone"],
+                row["kakao_url"],
+                row["naver_url"],
+                row["created_at"],
+            ),
+        )
+        conn.commit()
+        return {**row, "id": cur.lastrowid, "storage": "sqlite", "duplicate": False}
+
+
+async def load_all_saved_places() -> list[dict]:
+    sb = _supabase_headers()
+    if sb:
+        base_url, headers = sb
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(
+                    f"{base_url}/rest/v1/pick3_saved_places",
+                    headers=headers,
+                    params={"order": "created_at.desc", "limit": "200"},
+                )
+                if resp.status_code == 200:
+                    return resp.json()
+        except Exception:
+            pass
+
+    db_path = _get_db_path()
+    if not db_path.exists():
+        return []
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        _init_sqlite(conn)
+        rows = conn.execute(
+            "SELECT * FROM pick3_saved_places ORDER BY id DESC LIMIT 200"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+async def pick3_from_saved(
+    area: str = "",
+    lat: float | None = None,
+    lng: float | None = None,
+) -> dict:
+    """Return top 3 saved places filtered by area or sorted by distance from user GPS."""
+    rows = await load_all_saved_places()
+    clean_area = area.strip()
+
+    scored: list[tuple[int, float, dict]] = []
+    for r in rows:
+        addr_blob = f"{r.get('area', '')} {r.get('address', '')}"
+        area_match = 1 if (clean_area and clean_area in addr_blob) else 0
+        dist_m = float("inf")
+        if lat is not None and lng is not None and r.get("lat") and r.get("lng"):
+            dist_m = _haversine_meters(lat, lng, float(r["lat"]), float(r["lng"]))
+        scored.append((area_match, -dist_m if dist_m != float("inf") else -1e9, r))
+
+    if clean_area:
+        area_only = [item for item in scored if item[0] == 1]
+        if area_only:
+            scored = area_only
+
+    scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    picks: list[RestaurantPick] = []
+    for _, neg_dist, r in scored[:6]:
+        dist_text = _format_walk_distance(-neg_dist) if neg_dist > -1e8 else ""
+        sig = r.get("signature_menu") or ""
+        memo = r.get("memo") or ""
+        reason_parts = [p for p in (memo, f"저장 메뉴: {sig}" if sig else "") if p]
+        reason = " · ".join(reason_parts) or "인스타에서 내가 저장한 맛집"
+        picks.append(
+            RestaurantPick(
+                name=r["name"],
+                category=r.get("category") or "저장 맛집",
+                area=r.get("address") or r.get("area") or "위치 확인",
+                reason=reason,
+                price_note=f"대표: {sig}" if sig else "인스타 저장 목록",
+                service_tags=[t for t in ("내 저장", r.get("category") or "", r.get("area") or "") if t][:3],
+                open_status="영업시간 지도 확인",
+                naver_map_url=r.get("naver_url") or _build_map_urls(r["name"], r.get("area", ""))[0],
+                kakao_map_url=r.get("kakao_url") or _build_map_urls(r["name"], r.get("area", ""))[1],
+                phone=r.get("phone") or "",
+                distance_text=dist_text,
+                role_badge="내 저장 픽",
+                is_verified_detail=True,
+            )
+        )
+
+    if not picks:
+        empty_pick = RestaurantPick(
+            name="아직 저장된 인스타 맛집이 없어요",
+            category="안내",
+            area=clean_area or "내 주변",
+            reason="아이폰 뒷면 탭 단축어로 인스타 화면을 캡처해 보내면 이곳에 자동 저장됩니다.",
+            price_note="POST /api/ingest/screenshot",
+            service_tags=["iOS 단축어", "자동 저장"],
+            open_status="대기 중",
+            naver_map_url="https://map.naver.com/",
+            kakao_map_url="https://map.kakao.com/",
+            is_verified_detail=False,
+        )
+        return {
+            "query": "내 저장",
+            "area": clean_area or "내 주변",
+            "situation": "solo",
+            "situation_label": "내 저장",
+            "criteria": "내가 인스타에서 저장한 맛집",
+            "data_source": "saved_places",
+            "cached": False,
+            "top_pick": empty_pick.to_dict(),
+            "alternatives": [],
+            "reserve_picks": [],
+        }
+
+    return {
+        "query": "내 저장",
+        "area": clean_area or ("내 위치 주변" if lat is not None else "전체 저장"),
+        "situation": "solo",
+        "situation_label": "내 저장",
+        "criteria": "내가 인스타에서 저장한 맛집 중 가까운/일치 순",
+        "data_source": "saved_places",
+        "cached": False,
+        "top_pick": picks[0].to_dict(),
+        "alternatives": [p.to_dict() for p in picks[1:3]],
+        "reserve_picks": [p.to_dict() for p in picks[3:6]],
+    }

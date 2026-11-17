@@ -145,8 +145,8 @@
     }
     .provider-row {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 6px;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 5px;
       margin-top: 10px;
       padding-top: 10px;
       border-top: 1px solid var(--border);
@@ -391,10 +391,11 @@
         </button>
       </div>
       <div class="provider-row" id="providerRow">
-        <button type="button" class="prov-btn active" data-prov="kakao">카카오 (무료)</button>
-        <button type="button" class="prov-btn" data-prov="google">구글 평점순</button>
-        <button type="button" class="prov-btn" data-prov="naver">네이버 로컬</button>
-        <button type="button" class="prov-btn" data-prov="auto">자동 추천</button>
+        <button type="button" class="prov-btn active" data-prov="kakao">카카오</button>
+        <button type="button" class="prov-btn" data-prov="google">구글 평점</button>
+        <button type="button" class="prov-btn" data-prov="naver">네이버</button>
+        <button type="button" class="prov-btn" data-prov="saved">📌 내 저장</button>
+        <button type="button" class="prov-btn" data-prov="auto">자동</button>
       </div>
     </section>
 
@@ -600,17 +601,22 @@
       const shouldCallBackend = Boolean(apiBase) || !isStaticHost;
       if (shouldCallBackend) {
         try {
-          const res = await fetch(`${apiBase}/api/recommend`, {
+          const endpoint = currentProvider === "saved" ? "/api/saved/pick3" : "/api/recommend";
+          const reqBody =
+            currentProvider === "saved"
+              ? { area, lat: currentLat, lng: currentLng }
+              : {
+                  query,
+                  area,
+                  situation: currentSituation,
+                  provider: currentProvider,
+                  lat: currentLat,
+                  lng: currentLng,
+                };
+          const res = await fetch(`${apiBase}${endpoint}`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              query,
-              area,
-              situation: currentSituation,
-              provider: currentProvider,
-              lat: currentLat,
-              lng: currentLng,
-            }),
+            body: JSON.stringify(reqBody),
           });
           if (res.ok) {
             const data = await res.json();
@@ -668,7 +674,9 @@
       const top = data.top_pick;
       const alts = data.alternatives || [];
       const baseSourceText =
-        data.data_source === "google_places_api"
+        data.data_source === "saved_places"
+          ? "📌 내가 저장한 맛집"
+          : data.data_source === "google_places_api"
           ? "실시간 구글 평점순"
           : data.data_source === "kakao_local_api"
           ? "실시간 카카오 로컬"
@@ -1059,7 +1067,7 @@
           currentSituation = savedSit;
           sitButtons.forEach((b) => b.classList.toggle("active", b.dataset.sit === savedSit));
         }
-        if (savedProv && ["kakao", "google", "naver", "auto"].includes(savedProv)) {
+        if (savedProv && ["kakao", "google", "naver", "saved", "auto"].includes(savedProv)) {
           currentProvider = savedProv;
           provButtons.forEach((b) => b.classList.toggle("active", b.dataset.prov === savedProv));
         }

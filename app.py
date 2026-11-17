@@ -11,7 +11,7 @@ if sys.stdout is not None and hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -19,6 +19,13 @@ from pydantic import BaseModel, field_validator
 
 from providers import ProviderType, SituationType, get_kakao_diag, get_recommendations
 from reels_script import build_reels_script
+from saved_places import (
+    extract_place_from_image,
+    load_all_saved_places,
+    pick3_from_saved,
+    resolve_place_with_kakao,
+    save_place,
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -130,3 +137,42 @@ async def reels_script(payload: ReelsScriptRequest) -> dict:
         lng=payload.lng,
     )
     return build_reels_script(rec, episode=max(1, payload.episode))
+
+
+@app.post("/api/ingest/screenshot")
+async def ingest_screenshot(image: UploadFile = File(...)) -> dict:
+    raw = await image.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty image upload")
+    extracted = await extract_place_from_image(raw, mime_type=image.content_type or "image/jpeg")
+    if not extracted["name"]:
+        return {
+            "status": "not_found",
+            "message": "화면에서 음식점 이름을 찾지 못했습니다. 상호가 보이는 화면에서 다시 시도해 주세요.",
+        }
+    resolved = await resolve_place_with_kakao(extracted)
+    saved = await save_place(resolved)
+    area_text = saved.get("area") or saved.get("address") or ""
+    prefix = "이미 저장된 곳입니다" if saved.get("duplicate") else "✅ 저장 완료"
+    return {
+        "status": "saved",
+        "message": f"{prefix}: {saved['name']}" + (f" ({area_text})" if area_text else ""),
+        "place": saved,
+    }
+
+
+@app.get("/api/saved")
+async def list_saved() -> dict:
+    rows = await load_all_saved_places()
+    return {"count": len(rows), "items": rows}
+
+
+class SavedPick3Request(BaseModel):
+    area: str = ""
+    lat: float | None = None
+    lng: float | None = None
+
+
+@app.post("/api/saved/pick3")
+async def saved_pick3(payload: SavedPick3Request) -> dict:
+    return await pick3_from_saved(area=payload.area, lat=payload.lat, lng=payload.lng)

@@ -618,3 +618,103 @@ def test_reels_script_endpoint() -> None:
     assert len(body["cuts"]) == 3
     assert "팔로우" in body["outro_cta_14_18s"]
     assert "인스타 본문 캡션" in body["full_text"]
+
+
+def test_render_reels_ass_subtitles_and_timings(tmp_path: Path) -> None:
+    import render_reels
+
+    timings = render_reels.extract_word_timings(tmp_path / "missing.mp3", "강남 돼지갈비 맛집", 6.0)
+    assert len(timings) == 3
+    ass_path = tmp_path / "test.ass"
+    render_reels.build_ass_subtitles("테스트 제목", timings, 6.0, ass_path)
+    content = ass_path.read_text(encoding="utf-8")
+    assert "PlayResX: 1080" in content
+    assert "PlayResY: 1920" in content
+    assert "\\c&H0000D4FF\\fscx115\\fscy115" in content
+
+
+def test_ingest_screenshot_and_recall_saved_pick3(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import httpx
+
+    monkeypatch.setenv("PICK3_SQLITE_PATH", str(tmp_path / "test_saved.db"))
+    monkeypatch.setenv("GEMINI_API_KEY", "fake_gemini")
+    monkeypatch.setenv("KAKAO_REST_API_KEY", "fake_kakao")
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_KEY", raising=False)
+
+    class FakeResp:
+        def __init__(self, payload: dict) -> None:
+            self.status_code = 200
+            self._payload = payload
+
+        def raise_for_status(self) -> None:
+            pass
+
+        def json(self) -> dict:
+            return self._payload
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            pass
+
+        async def post(self, *args, **kwargs):
+            return FakeResp(
+                {
+                    "candidates": [
+                        {
+                            "content": {
+                                "parts": [
+                                    {
+                                        "text": '{"name": "몽탄 성수직영점", "area": "성수", "category": "돼지갈비", "signature_menu": "우대갈비", "memo": "웨이팅 있음"}'
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            )
+
+        async def get(self, *args, **kwargs):
+            return FakeResp(
+                {
+                    "documents": [
+                        {
+                            "place_name": "몽탄 성수직영점",
+                            "road_address_name": "서울 성동구 연무장길 1",
+                            "x": "127.055",
+                            "y": "37.544",
+                            "phone": "02-555-1234",
+                            "place_url": "http://place.map.kakao.com/777",
+                        }
+                    ]
+                }
+            )
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+    ingest_res = client.post(
+        "/api/ingest/screenshot",
+        files={"image": ("reel.jpg", b"fake_jpeg_bytes", "image/jpeg")},
+    )
+    assert ingest_res.status_code == 200
+    ingest_body = ingest_res.json()
+    assert ingest_body["status"] == "saved"
+    assert "몽탄 성수직영점" in ingest_body["message"]
+
+    recall_res = client.post(
+        "/api/saved/pick3",
+        json={"area": "성수", "lat": 37.5445, "lng": 127.0555},
+    )
+    assert recall_res.status_code == 200
+    recall_body = recall_res.json()
+    assert recall_body["data_source"] == "saved_places"
+    assert recall_body["top_pick"]["name"] == "몽탄 성수직영점"
+    assert "도보" in recall_body["top_pick"]["distance_text"]
