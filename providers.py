@@ -658,53 +658,46 @@ async def _naver_get(
     return resp
 
 
+_MENU_PRICE_RE = re.compile(
+    r"([가-힣A-Za-z0-9]{2,12})\s*(?::|-|\s)\s*(\d{1,3}(?:,\d{3})+|\d{4,6})\s*원"
+)
 _WON_RE = re.compile(r"(\d{1,3}(?:,\d{3})+|\d{4,6})\s*원")
-_MAN_RE = re.compile(r"(\d+(?:\.\d+)?)\s*만\s*(?:(\d)\s*천)?\s*원?")
-
-
-def _extract_avg_krw_price(text: str) -> int | None:
-    """Extract realistic single-person meal prices (5,000~150,000 KRW) and return rounded median."""
-    prices: list[int] = []
-    for m in _WON_RE.finditer(text):
-        val = int(m.group(1).replace(",", ""))
-        if 5000 <= val <= 150000:
-            prices.append(val)
-    for m in _MAN_RE.finditer(text):
-        val = int(float(m.group(1)) * 10000 + (int(m.group(2)) * 1000 if m.group(2) else 0))
-        if 5000 <= val <= 150000:
-            prices.append(val)
-    if not prices:
-        return None
-    prices.sort()
-    mid = prices[len(prices) // 2]
-    return int(round(mid / 1000.0) * 1000)
-
-
-def _format_krw(won: int) -> str:
-    """Format KRW integer cleanly (e.g. 18000 -> '18,000원')."""
-    return f"{won:,}원"
-
-
-_DEFAULT_MENU_PRICE_HINT: dict[str, str] = {
-    "돼지갈비": "1인 약 18,000~25,000원",
-    "삼겹살": "1인 약 18,000~25,000원",
-    "국밥": "1인 약 10,000~12,000원",
-    "파스타": "1인 약 15,000~25,000원",
-    "소바": "1인 약 10,000~14,000원",
+_PRICE_STOPWORDS = {
+    "할인", "추가", "배달", "포장", "주차", "예약", "결제", "쿠폰", "총", "합계", "약", "평균",
 }
 
 
+def _extract_menu_price_with_year(items: list[dict], query: str) -> str | None:
+    """Extract representative menu name + price + year from recent Naver blog posts."""
+    for it in items:
+        text = f"{_strip_html(it.get('title', ''))} {_strip_html(it.get('description', ''))}"
+        postdate = str(it.get("postdate") or "").strip()
+        year_suffix = f" ({postdate[:4]}년 기준)" if len(postdate) >= 4 and postdate[:4].isdigit() else ""
+
+        # 1. Prefer explicit "<메뉴명> <금액>원" matches
+        for m in _MENU_PRICE_RE.finditer(text):
+            menu_name = m.group(1).strip()
+            won = int(m.group(2).replace(",", ""))
+            if menu_name not in _PRICE_STOPWORDS and 6000 <= won <= 150000:
+                return f"대표 메뉴: {menu_name} {won:,}원{year_suffix}"
+
+        # 2. Fallback: query menu keyword + valid price in the same post
+        if query and query in text:
+            for m in _WON_RE.finditer(text):
+                won = int(m.group(1).replace(",", ""))
+                if 6000 <= won <= 150000:
+                    return f"대표 메뉴: {query} {won:,}원{year_suffix}"
+    return None
+
+
 def _default_price_hint(query: str) -> str:
-    for k, hint in _DEFAULT_MENU_PRICE_HINT.items():
-        if k in query or query in k:
-            return hint
-    return "가격 지도 확인"
+    return "대표 메뉴·가격: 지도에서 확인"
 
 
 async def _fetch_naver_blog_signals(
-    name: str, area: str, situation: SituationType, client_id: str, client_secret: str
-) -> tuple[bool, list[str], int | None]:
-    """Check Naver Blog snippets for closed-restaurant signals, highlights, and per-person price."""
+    name: str, area: str, query: str, situation: SituationType, client_id: str, client_secret: str
+) -> tuple[bool, list[str], str | None]:
+    """Check Naver Blog snippets for closed signals, highlights, and representative menu price."""
     q = f"{area} {name}".strip() if area and area not in name else name
     try:
         async with httpx.AsyncClient(timeout=3.5) as client:
@@ -738,8 +731,8 @@ async def _fetch_naver_blog_signals(
 
     keywords = _SITUATION_KEYWORDS[situation] + ["가성비", "주차", "웨이팅"]
     matched = [kw for kw in keywords if kw in combined]
-    avg_price = _extract_avg_krw_price(combined)
-    return is_likely_closed, matched[:3], avg_price
+    menu_price_label = _extract_menu_price_with_year(items, query)
+    return is_likely_closed, matched[:3], menu_price_label
 
 
 _SITUATION_COPY: dict[SituationType, str] = {
@@ -797,7 +790,7 @@ async def _enrich_and_filter_with_naver(
     candidates = picks[:6]
     results = await asyncio.gather(
         *[
-            _fetch_naver_blog_signals(p.name, area, situation, naver_id, naver_secret)
+            _fetch_naver_blog_signals(p.name, area, p.category, situation, naver_id, naver_secret)
             for p in candidates
         ],
         return_exceptions=True,
@@ -809,7 +802,7 @@ async def _enrich_and_filter_with_naver(
         if isinstance(res, Exception):
             alive.append(pick)
             continue
-        is_closed, matched_kw, avg_price = res
+        is_closed, matched_kw, menu_price_label = res
         updated = pick
         if matched_kw:
             phrases = _humanize_keywords(matched_kw)[:2]
@@ -817,10 +810,8 @@ async def _enrich_and_filter_with_naver(
             base_reason = _SITUATION_COPY[situation] if not pick.rating else pick.reason
             new_reason = f"{base_reason} · {', '.join(phrases)}"
             updated = replace(updated, reason=new_reason, service_tags=new_tags)
-        if avg_price is not None:
-            price_label = f"1인 약 {_format_krw(avg_price)}"
-            if updated.rating:
-                price_label = f"{price_label} · ⭐ {updated.rating:.1f}"
+        if menu_price_label is not None:
+            price_label = f"{menu_price_label} · ⭐ {updated.rating:.1f}" if updated.rating else menu_price_label
             updated = replace(updated, price_note=price_label)
         if is_closed:
             closed_backup.append(replace(updated, open_status="⚠️ 최근 폐업 의심(확인 필요)"))
@@ -1004,14 +995,7 @@ async def _fetch_google_places(
         naver_url, kakao_url = _build_map_urls(name, area)
         google_url = p.get("googleMapsUri") or ""
 
-        _GOOGLE_PRICE_MAP = {
-            "PRICE_LEVEL_INEXPENSIVE": "1만 원대",
-            "PRICE_LEVEL_MODERATE": "2~3만 원대",
-            "PRICE_LEVEL_EXPENSIVE": "4만 원 이상",
-            "PRICE_LEVEL_VERY_EXPENSIVE": "6만 원 이상",
-        }
-        g_price = _GOOGLE_PRICE_MAP.get(p.get("priceLevel", ""), _default_price_hint(query))
-        rating_str = f"{g_price} · ⭐ {rating:.1f}" if rating else g_price
+        rating_str = f"⭐ {rating:.1f} (리뷰 {count:,}개)" if rating else _default_price_hint(query)
         phrases = _humanize_keywords(matched_kw)[:2]
         if phrases:
             reason = f"⭐ {rating:.1f} ({count:,}명) · {', '.join(phrases)}"

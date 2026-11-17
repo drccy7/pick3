@@ -474,7 +474,8 @@ def test_closed_restaurants_filtered_by_google_status_and_naver_blog(
                     "items": [
                         {
                             "title": "정상 식당 후기",
-                            "description": "직원이 구워주고 룸도 있어서 회식 추천! 1인분 18,000원 수준.",
+                            "description": "직원이 구워주고 룸도 있어서 회식 추천! 대표 메뉴 돼지갈비 18,000원 수준.",
+                            "postdate": "20261110",
                         }
                     ]
                 }
@@ -503,4 +504,4 @@ def test_closed_restaurants_filtered_by_google_status_and_naver_blog(
     assert "블로그 폐업식당" not in names
     assert names == ["정상 영업식당 A", "정상 영업식당 B", "정상 영업식당 C"]
     assert "직원 구이" in body["top_pick"]["reason"] or "룸 좌석 있음" in body["top_pick"]["reason"]
-    assert "18,000원" in body["top_pick"]["price_note"]
+    assert "돼지갈비 18,000원 (2026년 기준)" in body["top_pick"]["price_note"]
