@@ -69,6 +69,22 @@ async def index() -> FileResponse:
     return FileResponse(str(index_path))
 
 
+@app.get("/manifest.json")
+async def manifest() -> FileResponse:
+    path = BASE_DIR / "manifest.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="manifest.json not found")
+    return FileResponse(str(path), media_type="application/manifest+json")
+
+
+@app.get("/icon.svg")
+async def icon() -> FileResponse:
+    path = BASE_DIR / "icon.svg"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="icon.svg not found")
+    return FileResponse(str(path), media_type="image/svg+xml")
+
+
 @app.get("/api/health")
 async def health() -> dict:
     return {"status": "ok", "service": "pick3", **get_kakao_diag()}

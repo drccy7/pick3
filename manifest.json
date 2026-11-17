@@ -1,0 +1,17 @@
+{
+  "name": "Pick3 · 10초 맛집 결정기",
+  "short_name": "Pick3",
+  "description": "목록 20개 대신 지금 상황에 딱 맞는 3곳만 골라주는 결정기",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0f1115",
+  "theme_color": "#0f1115",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

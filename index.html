@@ -3,6 +3,10 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0f1115" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
   <title>Pick3 · 10초 맛집 결정기</title>
   <style>
     :root {
@@ -254,6 +258,17 @@
       border-radius: 10px;
     }
     .price-line { margin-top: 10px; font-size: 13px; font-weight: 700; color: #ffd166; }
+    .caution-pill {
+      display: inline-block;
+      margin-top: 8px;
+      font-size: 11px;
+      font-weight: 700;
+      color: #fbbf24;
+      background: rgba(251, 191, 36, 0.12);
+      border: 1px solid rgba(251, 191, 36, 0.35);
+      padding: 3px 9px;
+      border-radius: 999px;
+    }
     .tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
     .tag {
       font-size: 11px;
@@ -693,6 +708,7 @@
           <div class="place-sub">${escapeHtml(top.category)} · ${escapeHtml(top.area)} · ${escapeHtml(top.open_status)}${topDist}</div>
           <div class="reason">${escapeHtml(top.reason)}</div>
           <div class="price-line">💰 ${escapeHtml(top.price_note)}</div>
+          ${top.caution_note ? `<div class="caution-pill">${escapeHtml(top.caution_note)}</div>` : ""}
           <div class="tags">${renderTags(top.service_tags)}</div>
           ${renderMapButtons(top)}
         </article>
@@ -713,6 +729,7 @@
             </div>
             <div class="alt-name"><a class="place-link" href="${item.kakao_map_url}" target="_blank" rel="noopener">${escapeHtml(item.name)} ↗</a></div>
             <div class="place-sub">${escapeHtml(item.price_note)}</div>
+            ${item.caution_note ? `<div class="caution-pill">${escapeHtml(item.caution_note)}</div>` : ""}
             <div class="reason">${escapeHtml(item.reason)}</div>
             <div class="tags">${renderTags(item.service_tags)}</div>
             ${renderMapButtons(item)}
@@ -846,6 +863,7 @@
         sitButtons.forEach((b) => b.classList.remove("active"));
         btn.classList.add("active");
         currentSituation = btn.dataset.sit;
+        savePrefs();
         fetchRecommendation();
       });
     });
@@ -855,11 +873,13 @@
         provButtons.forEach((b) => b.classList.remove("active"));
         btn.classList.add("active");
         currentProvider = btn.dataset.prov;
+        savePrefs();
         fetchRecommendation();
       });
     });
 
     searchBtn.addEventListener("click", () => {
+      savePrefs();
       renderMenuChips();
       fetchRecommendation();
     });
@@ -923,6 +943,37 @@
       if (e.key === "Enter") fetchRecommendation();
     });
 
+    function savePrefs() {
+      try {
+        localStorage.setItem("pick3_last_area", areaInput.value.trim());
+        localStorage.setItem("pick3_last_sit", currentSituation);
+        localStorage.setItem("pick3_last_prov", currentProvider);
+      } catch {}
+    }
+
+    function restorePrefs() {
+      try {
+        const savedArea = localStorage.getItem("pick3_last_area");
+        const savedSit = localStorage.getItem("pick3_last_sit");
+        const savedProv = localStorage.getItem("pick3_last_prov");
+        if (savedArea) {
+          areaInput.value = savedArea;
+          document.querySelectorAll(".area-chip[data-area]").forEach((c) => {
+            c.classList.toggle("active", c.dataset.area === savedArea);
+          });
+        }
+        if (savedSit && SITUATION_META[savedSit]) {
+          currentSituation = savedSit;
+          sitButtons.forEach((b) => b.classList.toggle("active", b.dataset.sit === savedSit));
+        }
+        if (savedProv && ["kakao", "google", "naver", "auto"].includes(savedProv)) {
+          currentProvider = savedProv;
+          provButtons.forEach((b) => b.classList.toggle("active", b.dataset.prov === savedProv));
+        }
+      } catch {}
+    }
+
+    restorePrefs();
     renderMenuChips();
     fetchRecommendation();
   </script>

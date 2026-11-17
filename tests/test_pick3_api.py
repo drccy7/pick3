@@ -588,3 +588,19 @@ def test_role_badges_use_evidence_when_present_and_fallback_when_weak() -> None:
     )
     assert weak_evidence[1].role_badge == "리뷰 검증 대안"
     assert weak_evidence[2].role_badge == ""
+
+
+def test_pwa_manifest_icon_and_caution_note() -> None:
+    import providers
+
+    m = client.get("/manifest.json")
+    assert m.status_code == 200
+    assert m.json()["short_name"] == "Pick3"
+
+    ic = client.get("/icon.svg")
+    assert ic.status_code == 200
+    assert "<svg" in ic.text
+
+    caution = providers._extract_caution_note("평일 브레이크타임 15시~17시이고 저녁엔 웨이팅 있어요")
+    assert "브레이크타임" in caution
+    assert "웨이팅" in caution

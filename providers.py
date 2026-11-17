@@ -85,6 +85,7 @@ class RestaurantPick:
     phone: str = ""
     distance_text: str = ""
     role_badge: str = ""
+    caution_note: str = ""
     rating: float | None = None
     review_count: int | None = None
     is_verified_detail: bool = True
@@ -718,10 +719,28 @@ def _default_price_hint(query: str) -> str:
     return "대표 메뉴·가격: 지도에서 확인"
 
 
+_CAUTION_RULES: list[tuple[tuple[str, ...], str]] = [
+    (("브레이크타임", "브레이크 타임"), "브레이크타임"),
+    (("웨이팅", "줄서", "대기시간"), "웨이팅"),
+    (("예약 필수", "예약필수", "예약제", "사전 예약"), "예약 필수"),
+    (("정기휴무", "휴무일"), "휴무일 확인"),
+]
+
+
+def _extract_caution_note(text: str) -> str:
+    notes: list[str] = []
+    for patterns, label in _CAUTION_RULES:
+        if any(p in text for p in patterns):
+            notes.append(label)
+    if not notes:
+        return ""
+    return f"⏰ {' · '.join(notes[:2])} 참고"
+
+
 async def _fetch_naver_blog_signals(
     name: str, area: str, query: str, situation: SituationType, client_id: str, client_secret: str
-) -> tuple[bool, list[str], str | None]:
-    """Check Naver Blog snippets for closed signals, highlights, and representative menu price."""
+) -> tuple[bool, list[str], str | None, str]:
+    """Check Naver Blog snippets for closed signals, highlights, price, and caution notes."""
     q = f"{area} {name}".strip() if area and area not in name else name
     try:
         async with httpx.AsyncClient(timeout=3.5) as client:
@@ -735,16 +754,16 @@ async def _fetch_naver_blog_signals(
             _LAST_NAVER_DIAG["status"] = resp.status_code
             if resp.status_code != 200:
                 _LAST_NAVER_DIAG["error"] = resp.text[:200]
-                return False, [], None
+                return False, [], None, ""
             _LAST_NAVER_DIAG["error"] = None
             items = resp.json().get("items", [])
     except Exception as exc:
         _LAST_NAVER_DIAG["status"] = -1
         _LAST_NAVER_DIAG["error"] = str(exc)[:200]
-        return False, [], None
+        return False, [], None, ""
 
     if not items:
-        return False, [], None
+        return False, [], None, ""
 
     combined = " ".join(
         f"{_strip_html(it.get('title', ''))} {_strip_html(it.get('description', ''))}"
@@ -753,10 +772,11 @@ async def _fetch_naver_blog_signals(
     closed_hits = sum(1 for pat in _CLOSED_PATTERNS if pat in combined)
     is_likely_closed = closed_hits >= 2 or ("폐업" in combined and "맛집" not in combined)
 
-    keywords = _SITUATION_KEYWORDS[situation] + ["가성비", "주차", "웨이팅"]
+    keywords = _SITUATION_KEYWORDS[situation] + ["가성비", "주차"]
     matched = [kw for kw in keywords if kw in combined]
     menu_price_label = _extract_menu_price_with_year(items, query)
-    return is_likely_closed, matched[:3], menu_price_label
+    caution_note = _extract_caution_note(combined)
+    return is_likely_closed, matched[:3], menu_price_label, caution_note
 
 
 _SITUATION_COPY: dict[SituationType, str] = {
@@ -854,7 +874,7 @@ async def _enrich_and_filter_with_naver(
         if isinstance(res, Exception):
             alive.append(pick)
             continue
-        is_closed, matched_kw, menu_price_label = res
+        is_closed, matched_kw, menu_price_label, blog_caution = res
         updated = pick
         if matched_kw:
             phrases = _humanize_keywords(matched_kw)[:2]
@@ -865,6 +885,8 @@ async def _enrich_and_filter_with_naver(
         if menu_price_label is not None:
             price_label = f"{menu_price_label} · ⭐ {updated.rating:.1f}" if updated.rating else menu_price_label
             updated = replace(updated, price_note=price_label)
+        if blog_caution and not updated.caution_note:
+            updated = replace(updated, caution_note=blog_caution)
         if is_closed:
             closed_backup.append(replace(updated, open_status="⚠️ 최근 폐업 의심(확인 필요)"))
         else:
@@ -1030,14 +1052,14 @@ async def _fetch_google_places(
         matched_kw = [kw for kw in keywords if kw in reviews_text]
         rating = float(p.get("rating") or 0.0)
         count = int(p.get("userRatingCount") or 0)
-        scored.append((is_area_match, len(matched_kw), rating, count, p, matched_kw))
+        scored.append((is_area_match, len(matched_kw), rating, count, p, matched_kw, _extract_caution_note(reviews_text)))
 
     # Sort by area match, then situation review match (>0 vs 0), then highest rating, then review count.
     scored.sort(key=lambda item: (item[0], 1 if item[1] > 0 else 0, item[2], item[3], item[1]), reverse=True)
 
     sit_label = _SITUATION_META[situation]["label"]
     picks: list[RestaurantPick] = []
-    for _, _, rating, count, p, matched_kw in scored[:6]:
+    for _, _, rating, count, p, matched_kw, g_caution in scored[:6]:
         name = (p.get("displayName") or {}).get("text") or "상호 미상"
         addr = p.get("formattedAddress") or area or "위치 확인"
         addr = addr.removeprefix("대한민국 ").strip()
@@ -1078,6 +1100,7 @@ async def _fetch_google_places(
                 google_maps_url=google_url,
                 phone=phone,
                 distance_text=dist_text,
+                caution_note=g_caution,
                 rating=rating or None,
                 review_count=count or None,
                 is_verified_detail=True,
