@@ -636,22 +636,26 @@ async def _naver_get(
     client_id: str,
     client_secret: str,
 ) -> httpx.Response:
-    """Call NAVER API HUB first (NCP keys), falling back to legacy openapi.naver.com on 401/403."""
+    """Call NAVER API HUB (NCP keys) or legacy openapi.naver.com."""
     ncp_url = f"https://naverapihub.apigw.ntruss.com/search/v1/{endpoint}"
     ncp_headers = {
         "X-NCP-APIGW-API-KEY-ID": client_id,
         "X-NCP-APIGW-API-KEY": client_secret,
     }
-    resp = await client.get(ncp_url, headers=ncp_headers, params=params)
-    if resp.status_code not in (401, 403):
+    ncp_params = {**params, "format": "json"}
+    resp = await client.get(ncp_url, headers=ncp_headers, params=ncp_params)
+    if resp.status_code == 200:
         return resp
 
-    legacy_url = f"https://openapi.naver.com/v1/search/{endpoint}.json"
-    legacy_headers = {
-        "X-Naver-Client-Id": client_id,
-        "X-Naver-Client-Secret": client_secret,
-    }
-    return await client.get(legacy_url, headers=legacy_headers, params=params)
+    # Legacy Naver Developers Client IDs are typically 20 chars; NCP keys are ~10 chars.
+    if len(client_id) >= 18:
+        legacy_url = f"https://openapi.naver.com/v1/search/{endpoint}.json"
+        legacy_headers = {
+            "X-Naver-Client-Id": client_id,
+            "X-Naver-Client-Secret": client_secret,
+        }
+        return await client.get(legacy_url, headers=legacy_headers, params=params)
+    return resp
 
 
 async def _fetch_naver_blog_signals(
