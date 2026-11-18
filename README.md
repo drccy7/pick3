@@ -39,7 +39,8 @@ pytest tests/test_pick3_api.py -v
 저장 목록은 사람마다 따로입니다. 각자 받은 **개인 토큰**으로 구분합니다(서버에는 토큰의 SHA-256 해시만 저장).
 
 1. 처음 한 번: Supabase SQL Editor에서 `docs/SUPABASE_MIGRATION_002_users.sql` 실행 (`SUPABASE_SETUP.sql` 다음)
-2. 사용자 추가: `python scripts/pick3_users.py add 홍길동` → 토큰이 **한 번만** 표시됨. 본인에게 전달
+2. 사용자 추가: `python scripts/pick3_users.py add 홍길동` → 토큰과 **개인 시작 링크**(`start.html#t=<토큰>`)가 **한 번만** 표시됨. 링크만 전달하면 됨
+   - 시작 페이지: ① 토큰 복사 + 단축어 설치 ② 내 저장 열기(토큰 자동 저장). `#` 뒤 토큰은 서버로 전송되지 않음
 3. 그 밖의 관리: `list`, `rotate <id>`(토큰 분실·유출 시 재발급), `disable <id>`, `enable <id>`
 
 받은 사람은 토큰을 ① 단축어 헤더에 넣고 ② 웹앱 **📌 내 저장**을 처음 누를 때 붙여넣습니다(이 기기에만 보관). `https://…/?token=<토큰>` 링크로 열어도 저장됩니다.

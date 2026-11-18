@@ -44,9 +44,13 @@ def _check(resp: httpx.Response) -> list:
     return resp.json() if resp.text else []
 
 
+START_URL = os.getenv("PICK3_START_URL", "https://drccy7.github.io/pick3/start.html")
+
+
 def _print_token(name: str, token: str) -> None:
     print(f"\n{name} 님의 토큰 (지금 한 번만 표시됩니다):\n\n  {token}\n")
-    print("단축어 설치 때 이 값을 붙여넣고, 웹앱 '내 저장'에서도 한 번 입력하면 됩니다.")
+    print("보낼 메시지 (개인 시작 링크 - 열고 버튼 2개):\n")
+    print(f"  Pick3 인스타 맛집 저장 - 아래 링크를 열고 버튼 두 개만 누르세요\n  {START_URL}#t={token}\n")
 
 
 def main() -> None:
