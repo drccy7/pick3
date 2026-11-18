@@ -75,21 +75,15 @@
     <p style="margin-top:10px">더 빠르게: 설정 → 손쉬운 사용 → 터치 → 뒷면 탭 → 이중 탭 → Pick3 저장. 그러면 뒷면을 톡톡 두 번 두드리는 것으로 끝납니다.</p>
   </div>
 
+  <script src="account.js"></script>
   <script>
     const SHORTCUT_URL = "https://www.icloud.com/shortcuts/ae731900ca38496ab5a518d6e2bc9feb";
 
     // Token rides in the URL fragment (#t=...), which browsers never send to any server.
-    const token = (new URLSearchParams(location.hash.slice(1)).get("t") || "").trim();
-    if (token) {
-      try {
-        localStorage.setItem("pick3_token", token);
-        localStorage.setItem("pick3_last_prov", "saved");
-      } catch {}
-      history.replaceState(null, "", location.pathname);
-    }
-    let saved = "";
-    try { saved = localStorage.getItem("pick3_token") || ""; } catch {}
-    const myToken = token || saved;
+    // account.js stores it (asking first if this device already has another account).
+    // The install button always copies the LINK's token: that is the person being set up.
+    const myToken = Pick3Account.linkToken || Pick3Account.getToken();
+    if (Pick3Account.linkToken) { try { localStorage.setItem("pick3_last_prov", "saved"); } catch {} }
     if (!myToken) {
       document.getElementById("greet").innerHTML =
         '<span class="err">개인 링크로 열어 주세요. 받은 링크 전체(# 뒤까지)를 열어야 합니다.</span>';

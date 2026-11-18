@@ -190,6 +190,10 @@ def test_edit_medical_record_validates_and_scopes_to_user(monkeypatch: pytest.Mo
 def test_pages_served_on_api_origin() -> None:
     assert "의료비 기록" in client.get("/medical.html").text
     assert "Pick3 시작하기" in client.get("/start.html").text
+    js = client.get("/account.js")
+    assert js.status_code == 200 and "javascript" in js.headers["content-type"]
+    for page in ("/", "/pick3.html", "/medical.html", "/start.html"):
+        assert '<script src="account.js"></script>' in client.get(page).text
 
 
 NAMELESS = {"patient": "", "records": [{"provider": "준약국", "kind": "약국", "amount": 18000, "date": "2025-12-01"}]}

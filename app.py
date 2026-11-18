@@ -130,6 +130,7 @@ async def manifest() -> FileResponse:
     return FileResponse(str(path), media_type="application/manifest+json")
 
 
+@app.get("/account.js")
 @app.get("/pick3.html")
 @app.get("/medical.html")
 @app.get("/start.html")

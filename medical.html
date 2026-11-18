@@ -110,17 +110,12 @@
     </form>
   </dialog>
 
+  <script src="account.js"></script>
   <script>
-    const API = "https://pick3-api.onrender.com";
+    const API = Pick3Account.API;
     let all = [];
 
-    function token() {
-      const fromHash = (new URLSearchParams(location.hash.slice(1)).get("t") || "").trim();
-      try {
-        if (fromHash) { localStorage.setItem("pick3_token", fromHash); history.replaceState(null, "", location.pathname); }
-        return fromHash || localStorage.getItem("pick3_token") || "";
-      } catch { return fromHash; }
-    }
+    const token = () => Pick3Account.getToken();
 
     const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
     const won = (n) => `${Number(n).toLocaleString("ko-KR")}원`;
@@ -151,12 +146,13 @@
     }
 
     async function load() {
+      await Pick3Account.ready;
       const t = token();
       const msg = document.getElementById("msg");
-      if (!t) { msg.innerHTML = '<span class="err">개인 링크(#t=…)로 열거나 Pick3 시작 페이지를 먼저 열어 주세요.</span>'; return; }
+      if (!t) { msg.innerHTML = '<span class="err">이 기기에 계정이 없습니다. 개인 시작 링크를 열거나 홈에서 [계정 바꾸기]를 눌러 주세요.</span>'; return; }
       try {
         const res = await fetch(`${API}/api/medical`, { headers: { "X-Pick3-Token": t } });
-        if (res.status === 401) { msg.innerHTML = '<span class="err">토큰이 맞지 않습니다.</span>'; return; }
+        if (res.status === 401) { msg.innerHTML = '<span class="err">토큰이 맞지 않습니다. 홈에서 [계정 바꾸기]를 눌러 주세요.</span>'; return; }
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         all = data.items;

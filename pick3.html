@@ -404,6 +404,7 @@
     </section>
   </main>
 
+  <script src="account.js"></script>
   <script>
     const SITUATION_META = {
       solo: { label: "혼자 / 점심", criteria: "1인 주문 가능 · 빠른 회전 · 웨이팅 최소" },
@@ -591,18 +592,10 @@
     }
 
     // Per-user token for "내 저장". Given once via ?token=... link or pasted; kept on this device only.
-    function captureTokenFromUrl() {
-      const params = new URLSearchParams(location.search);
-      const t = (params.get("token") || "").trim();
-      if (!t) return;
-      try { localStorage.setItem("pick3_token", t); } catch {}
-      params.delete("token");
-      const qs = params.toString();
-      history.replaceState(null, "", location.pathname + (qs ? `?${qs}` : "") + location.hash);
-    }
+    function captureTokenFromUrl() {}  // handled by account.js (asks before switching accounts)
 
     function getToken() {
-      try { return localStorage.getItem("pick3_token") || ""; } catch { return ""; }
+      return Pick3Account.getToken();
     }
 
     function askToken(reason) {
@@ -611,12 +604,13 @@
 받은 Pick3 토큰을 붙여넣어 주세요:`, "");
       const t = (typed || "").trim();
       if (t) {
-        try { localStorage.setItem("pick3_token", t); } catch {}
+        try { localStorage.setItem("pick3_token", t); localStorage.removeItem("pick3_name"); } catch {}
       }
       return t;
     }
 
     async function fetchRecommendation() {
+      await Pick3Account.ready;
       const query = menuInput.value.trim();
       const area = areaInput.value.trim();
       if (!query) {
