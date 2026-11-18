@@ -121,3 +121,21 @@ def test_in_document_repeats_reported_separately(monkeypatch: pytest.MonkeyPatch
     res = client.post("/api/ingest/medical", files={"image": ("홍길동 약처방.pdf", PDF, "application/pdf")},
                       headers=AUTH).json()
     assert "2건 저장 (문서 안 같은 약 1건 합침)" in res["message"] and "이미 있던" not in res["message"]
+
+
+def test_pdf_missed_by_title_check_falls_back_to_prescriptions(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _fake(monkeypatch, {"patient": "", "records": []}, rows=[])
+    monkeypatch.setattr(prescriptions, "is_prescription_pdf", lambda raw: False)
+    monkeypatch.setattr(prescriptions, "parse_prescription_pdf", lambda raw: (list(ROWS), []))
+    res = client.post("/api/ingest/medical", files={"image": ("홍길동 약처방.pdf", PDF, "application/pdf")},
+                      headers=AUTH).json()
+    assert res["status"] == "saved" and res["message"].startswith("💊 처방·조제 기록")
+    assert seen["posts"][0][0].endswith("/pick3_prescriptions")
+
+
+def test_not_found_reports_what_was_received(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake(monkeypatch, {"patient": "", "records": []}, rows=[])
+    monkeypatch.setattr(prescriptions, "is_prescription_pdf", lambda raw: False)
+    monkeypatch.setattr(prescriptions, "parse_prescription_pdf", lambda raw: ([], []))
+    res = client.post("/api/ingest/medical", files={"image": ("a.pdf", PDF, "application/pdf")}, headers=AUTH).json()
+    assert res["status"] == "not_found" and "(받은 파일: PDF · 1KB · a.pdf · '%PDF-1.7')" in res["message"]

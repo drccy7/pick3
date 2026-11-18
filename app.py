@@ -397,7 +397,21 @@ async def ingest_medical(
         # An image here may be a prescription screen (e.g. a PDF viewer captured instead of the file).
         if await screen_router.classify_screen(raw, mime) == "prescription":
             return await _save_prescriptions(user, raw, mime, chosen, filename=image.filename)
-    return await _save_medical(user, raw, mime, chosen)
+    result = await _save_medical(user, raw, mime, chosen)
+    if result.get("status") == "not_found":
+        # No payment rows: the document may still be a prescription list the title check missed.
+        rx = await _save_prescriptions(user, raw, mime, chosen, filename=image.filename)
+        if rx.get("status") == "saved":
+            return rx
+        result["message"] += "\n" + _received_note(raw, mime, image.filename)
+    return result
+
+
+def _received_note(raw: bytes, mime: str, filename: str | None) -> str:
+    """Short description of what the Shortcut actually sent - lets users report failures precisely."""
+    kind = {"application/pdf": "PDF"}.get(mime, mime.split("/")[-1].upper())
+    head = raw[:8].decode("latin-1", "replace").encode("ascii", "replace").decode()
+    return f"(받은 파일: {kind} · {max(1, len(raw) // 1024)}KB · {filename or '이름 없음'} · {head!r})"
 
 
 async def _save_prescriptions(user: dict, raw: bytes, mime: str, chosen: str = "", filename: str | None = None) -> dict:
