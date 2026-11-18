@@ -369,6 +369,16 @@ async def ingest_medical(
     patient, rows, skipped = medical.normalize_records(extracted)
     if not rows:
         return {"status": "not_found", "message": "결제 내역(기관·금액·날짜)을 찾지 못했습니다. 내역이 보이는 화면으로 다시 시도해 주세요."}
+    assumed = False
+    if not patient:
+        # Nameless screen (e.g. a receipt): default to the patient this user saved most recently.
+        try:
+            recent = await medical.recent_patient(user["id"])
+        except StorageError:
+            recent = ""
+        if recent:
+            patient, assumed = recent, True
+            rows = [{**r, "patient": recent} for r in rows]
     try:
         inserted, duplicates = await medical.save_medical_records(
             rows, user["id"], "pdf" if mime == "application/pdf" else "image")
@@ -382,11 +392,13 @@ async def ingest_medical(
     if len(rows) > 15:
         lines.append(f"… 외 {len(rows) - 15}건")
     lines.append(f"화면 합계 {total:,}원")
-    if not patient:
-        lines.append("⚠ 환자 이름을 찾지 못했습니다. 이름 탭이 보이게 캡처하면 구분됩니다.")
+    if assumed:
+        lines.append(f"⚠ 화면에 이름이 없어 최근 환자 '{patient}'(으)로 저장했습니다. 다르면 의료비 화면에서 행을 눌러 환자를 바꾸세요(같이 저장된 건 한 번에).")
+    elif not patient:
+        lines.append("⚠ 환자 이름을 찾지 못했습니다. 의료비 화면에서 행을 눌러 환자를 입력하세요.")
     if skipped:
         lines.append(f"⚠ 잘려서 읽지 못한 {skipped}건은 빠졌습니다. 스크롤해서 한 장 더 보내 주세요.")
-    return {"status": "saved", "message": "\n".join(lines), "patient": patient,
+    return {"status": "saved", "message": "\n".join(lines), "patient": patient, "patient_assumed": assumed,
             "inserted": inserted, "duplicates": duplicates, "skipped": skipped, "records": rows}
 
 
@@ -432,6 +444,29 @@ async def edit_medical(
     if not row:
         raise HTTPException(status_code=404, detail="Record not found")
     return row
+
+
+class MedicalPatientChange(BaseModel):
+    ids: list[int]
+    patient: str
+
+
+@app.post("/api/medical/patient")
+async def change_medical_patient(
+    payload: MedicalPatientChange,
+    x_pick3_token: Optional[str] = Header(default=None),
+) -> dict:
+    """Rename the patient on several rows (e.g. all rows from one capture saved under a wrong name)."""
+    user = await _current_user(x_pick3_token)
+    if not payload.ids or len(payload.ids) > 500:
+        raise HTTPException(status_code=422, detail="바꿀 기록을 1~500건 골라 주세요.")
+    try:
+        rows = await medical.set_patient(payload.ids, user["id"], payload.patient)
+    except medical.DuplicateRecordError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except StorageError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"updated": len(rows), "items": rows}
 
 
 @app.delete("/api/medical/{record_id}")

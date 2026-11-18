@@ -195,6 +195,51 @@ async def delete_medical_record(record_id: int, user_id: int | None) -> bool:
     return bool(resp.json())
 
 
+async def recent_patient(user_id: int | None) -> str:
+    """Patient name of the user's most recently saved record ('' if none) - default for nameless screens."""
+    endpoint, headers = _sb()
+    params = {
+        "user_id": f"eq.{user_id}" if user_id is not None else "is.null",
+        "patient": "neq.",
+        "select": "patient",
+        "order": "created_at.desc,id.desc",
+        "limit": "1",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(endpoint, headers=headers, params=params)
+    except Exception as exc:
+        raise StorageError(f"Supabase 연결 실패: {type(exc).__name__}: {exc}") from exc
+    if resp.status_code != 200:
+        raise StorageError(f"Supabase select HTTP {resp.status_code}: {resp.text[:200]}")
+    rows = resp.json()
+    return (rows[0].get("patient") or "") if rows else ""
+
+
+async def set_patient(record_ids: list[int], user_id: int | None, patient: str) -> list[dict]:
+    """Rename the patient on several of the user's rows at once (e.g. one wrongly-assumed capture)."""
+    ids = sorted({int(i) for i in record_ids})
+    if not ids:
+        return []
+    endpoint, headers = _sb()
+    owner = f"eq.{user_id}" if user_id is not None else "is.null"
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.patch(
+                endpoint,
+                headers={**headers, "Prefer": "return=representation"},
+                params={"id": f"in.({','.join(map(str, ids))})", "user_id": owner},
+                json={"patient": patient.strip()[:40]},
+            )
+    except Exception as exc:
+        raise StorageError(f"Supabase 연결 실패: {type(exc).__name__}: {exc}") from exc
+    if resp.status_code == 409 or "23505" in resp.text:
+        raise DuplicateRecordError("바꾸려는 환자에게 같은 기관·날짜·금액의 기록이 이미 있습니다.")
+    if resp.status_code != 200:
+        raise StorageError(f"Supabase update HTTP {resp.status_code}: {resp.text[:200]}")
+    return resp.json()
+
+
 class DuplicateRecordError(ValueError):
     """The edit would make the row identical to another (same patient/provider/date/amount)."""
 

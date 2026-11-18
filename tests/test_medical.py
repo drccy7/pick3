@@ -190,3 +190,35 @@ def test_edit_medical_record_validates_and_scopes_to_user(monkeypatch: pytest.Mo
 def test_pages_served_on_api_origin() -> None:
     assert "의료비 기록" in client.get("/medical.html").text
     assert "Pick3 시작하기" in client.get("/start.html").text
+
+
+NAMELESS = {"patient": "", "records": [{"provider": "준약국", "kind": "약국", "amount": 18000, "date": "2025-12-01"}]}
+
+
+def test_nameless_screen_defaults_to_most_recent_patient(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _fake(monkeypatch, NAMELESS, rows=[{"patient": "정지수"}])
+    res = client.post("/api/ingest/medical", files={"image": ("s.png", PNG, "image/png")}, headers=AUTH).json()
+    assert res["status"] == "saved" and res["patient"] == "정지수" and res["patient_assumed"] is True
+    assert "최근 환자 '정지수'" in res["message"]
+    assert seen["posts"][0][1]["json"][0]["patient"] == "정지수"
+    recent_q = seen["gets"][0][1]["params"]
+    assert recent_q["user_id"] == "eq.7" and recent_q["patient"] == "neq." and recent_q["limit"] == "1"
+
+
+def test_nameless_screen_without_history_keeps_blank_patient(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _fake(monkeypatch, NAMELESS, rows=[])
+    res = client.post("/api/ingest/medical", files={"image": ("s.png", PNG, "image/png")}, headers=AUTH).json()
+    assert res["patient"] == "" and res["patient_assumed"] is False
+    assert "환자 이름을 찾지 못했습니다" in res["message"]
+    assert seen["posts"][0][1]["json"][0]["patient"] == ""
+
+
+def test_bulk_patient_change(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _fake(monkeypatch, SCREEN)
+    res = client.post("/api/medical/patient", json={"ids": [3, 1, 3], "patient": " 정지수 "}, headers=AUTH)
+    assert res.status_code == 200
+    _, kw = seen["patches"][0]
+    assert kw["params"] == {"id": "in.(1,3)", "user_id": "eq.7"}
+    assert kw["json"] == {"patient": "정지수"}
+    assert client.post("/api/medical/patient", json={"ids": [], "patient": "x"}, headers=AUTH).status_code == 422
+    assert client.post("/api/medical/patient", json={"ids": [1], "patient": "x"}).status_code == 401
