@@ -393,6 +393,10 @@ async def ingest_medical(
     mime = medical.sniff_mime(raw, image.content_type)
     if prescriptions.is_prescription_pdf(raw):  # 처방조제정보 PDF -> its own table
         return await _save_prescriptions(user, raw, mime, chosen, filename=image.filename)
+    if mime != "application/pdf" and screen_router.auto_route_enabled():
+        # An image here may be a prescription screen (e.g. a PDF viewer captured instead of the file).
+        if await screen_router.classify_screen(raw, mime) == "prescription":
+            return await _save_prescriptions(user, raw, mime, chosen, filename=image.filename)
     return await _save_medical(user, raw, mime, chosen)
 
 
@@ -433,11 +437,16 @@ async def _save_prescriptions(user: dict, raw: bytes, mime: str, chosen: str = "
     except StorageError as exc:
         return {"status": "error", "message": "❌ 저장 실패 - 저장소 연결 문제입니다.", "detail": str(exc)}
 
+    # Same date/provider/drug twice in one document is one record; report it apart from earlier saves.
+    in_doc = len(rows) - len({(r["visit_date"], r["provider"], r["drug_name"]) for r in rows})
+    already = max(duplicates - in_doc, 0)
     dates = sorted(r["visit_date"] for r in rows)
     providers = {r["provider"] for r in rows}
     lines = [
         "💊 처방·조제 기록",
-        f"✅ {patient or '이름 없음'}: {inserted}건 저장" + (f" (이미 있던 {duplicates}건 제외)" if duplicates else ""),
+        f"✅ {patient or '이름 없음'}: {inserted}건 저장"
+        + (f" (이미 있던 {already}건 제외)" if already else "")
+        + (f" (문서 안 같은 약 {in_doc}건 합침)" if in_doc else ""),
         f"기간 {dates[0]} ~ {dates[-1]} · 기관 {len(providers)}곳",
     ]
     if patient and source_note in ("파일 이름에서", "최근 이름"):

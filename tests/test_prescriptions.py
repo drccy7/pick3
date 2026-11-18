@@ -101,3 +101,23 @@ def test_prescription_endpoints_scoped_and_authenticated(monkeypatch: pytest.Mon
                  lambda: client.delete("/api/prescriptions/1"),
                  lambda: client.post("/api/prescriptions/patient", json={"ids": [1], "patient": "x"})):
         assert call().status_code == 401
+
+
+def test_medical_shortcut_image_of_prescription_goes_to_prescriptions(monkeypatch: pytest.MonkeyPatch) -> None:
+    # e.g. the Shortcut captured the PDF viewer screen instead of receiving the file
+    gem_rows = {"patient": "", "records": [
+        {"date": "2025-10-17", "provider": "다라약국", "kind": "조제", "drug_name": "가약정"}]}
+    seen = _fake(monkeypatch, [{"type": "prescription"}, gem_rows], rows=[{"patient": "최근이름"}])
+    res = client.post("/api/ingest/medical", files={"image": ("s.png", PNG, "image/png")}, headers=AUTH).json()
+    assert res["status"] == "saved" and res["message"].startswith("💊 처방·조제 기록")
+    assert res["patient"] == "최근이름" and res["patient_source"] == "최근 이름"
+    assert seen["posts"][0][0].endswith("/pick3_prescriptions")
+
+
+def test_in_document_repeats_reported_separately(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake(monkeypatch, {}, rows=[])
+    monkeypatch.setattr(prescriptions, "is_prescription_pdf", lambda raw: True)
+    monkeypatch.setattr(prescriptions, "parse_prescription_pdf", lambda raw: ([ROWS[0], ROWS[0], ROWS[1]], []))
+    res = client.post("/api/ingest/medical", files={"image": ("홍길동 약처방.pdf", PDF, "application/pdf")},
+                      headers=AUTH).json()
+    assert "2건 저장 (문서 안 같은 약 1건 합침)" in res["message"] and "이미 있던" not in res["message"]
