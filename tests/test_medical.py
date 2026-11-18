@@ -98,6 +98,9 @@ def _fake(monkeypatch: pytest.MonkeyPatch, gemini_payload: dict, insert_returns=
             seen["deletes"].append((url, kw))
             return _Resp(200, [{"id": 1}])
 
+        async def request(self, method, url, **kw):
+            return await getattr(self, method.lower())(url, **kw)
+
         async def patch(self, url, **kw):
             seen.setdefault("patches", []).append((url, kw))
             if kw["json"].get("amount") == 999:
@@ -194,7 +197,7 @@ def test_pages_served_on_api_origin() -> None:
     assert "Pick3 시작하기" in client.get("/start.html").text
     js = client.get("/account.js")
     assert js.status_code == 200 and "javascript" in js.headers["content-type"]
-    for page in ("/", "/pick3.html", "/medical.html", "/start.html"):
+    for page in ("/", "/pick3.html", "/medical.html", "/prescriptions.html", "/start.html"):
         assert '<script src="account.js"></script>' in client.get(page).text
 
 

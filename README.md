@@ -127,6 +127,15 @@ URL 콘텐츠 가져오기 → 사전 값 가져오기 → 사전 값 보기
 
 새 서비스를 붙일 때: 판별 종류를 `screen_router.py`에 추가하고, `app.py`의 라우팅 분기에서 그 서비스의 저장 함수를 부르면 됩니다.
 
+## 처방·조제 기록 (💊)
+
+심평원 '내가 먹는 약' **처방조제정보 PDF**를 "의료비 저장" 단축어로 보내면 첫 쪽 제목을 보고 처방 기록으로 저장합니다(진료비 PDF는 의료비로). 보기: `prescriptions.html`(고객·연도·처방/조제 필터, 약품·성분 검색, 열 정렬, CSV, 이름 일괄 변경, 고객 단위 삭제).
+
+- 추출: 글자층이 있는 PDF는 **pdfplumber**(MIT)로 표를 그대로 읽음 — 무료·결정적, 순번 1..N 연속 검사로 누락 알림. 표가 없는 PDF(스캔)와 캡처 화면은 Gemini. Pick3 저장의 자동 판별에도 `prescription` 종류가 있음
+- 저장: `pick3_prescriptions`(`docs/SUPABASE_MIGRATION_004_prescriptions.sql`), 같은 고객·날짜·기관·약품은 한 번만
+- 이름: 입력한 이름(`patient` 필드) > 화면의 이름 > **파일 이름 앞의 한글 이름**(예: `홍길동 약처방.pdf`) > 최근 이름. 파일 이름·최근 이름을 쓴 경우 결과 문구에 표시
+- API: `GET /api/prescriptions`, `POST /api/prescriptions/patient`, `DELETE /api/prescriptions?patient=`, `DELETE /api/prescriptions/{id}`
+
 ## 의료비 기록 (보험금 청구용)
 
 병원·약국 결제 내역 화면(스크린샷) 또는 PDF를 공유하면 **환자 이름 + 기관·구분·금액·날짜**를 표로 저장합니다. 보기: `medical.html` (환자·연도·구분 필터, 합계, 엑셀용 CSV, 행 삭제).

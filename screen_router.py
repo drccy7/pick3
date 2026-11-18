@@ -17,12 +17,14 @@ try:
 except ImportError:
     from saved_places import gemini_model
 
-KINDS = ("restaurant", "medical", "other")
+KINDS = ("restaurant", "medical", "prescription", "other")
 
 _PROMPT = (
-    "이 화면이 어떤 종류인지 JSON으로만 답하세요. 형식: {\"type\": \"restaurant\" | \"medical\" | \"other\"}\n"
+    "이 화면이 어떤 종류인지 JSON으로만 답하세요. "
+    "형식: {\"type\": \"restaurant\" | \"medical\" | \"prescription\" | \"other\"}\n"
     "- restaurant: 음식점·카페·술집을 소개하는 게시물, 리뷰, 지도, 메뉴 화면\n"
-    "- medical: 병원·의원·약국·안경점 등의 진료비·약제비·결제 내역 목록이나 영수증, 의료비 명세\n"
+    "- medical: 병원·의원·약국·안경점 등의 진료비·약제비 결제 금액 내역 목록이나 영수증, 의료비 명세\n"
+    "- prescription: 처방·조제·투약 내역 (약품명, 성분, 투약량·투약일수가 나오는 목록, '내가 먹는 약' 등). 금액보다 약 정보가 중심\n"
     "- other: 그 밖의 모든 화면"
 )
 

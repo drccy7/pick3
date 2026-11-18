@@ -40,7 +40,7 @@ from pydantic import BaseModel, field_validator
 try:
     from .providers import ProviderType, SituationType, get_kakao_diag, get_recommendations
     from .reels_script import build_reels_script
-    from . import medical, screen_router
+    from . import medical, prescriptions, screen_router
     from .saved_places import (
         StorageError,
         bump_usage,
@@ -58,6 +58,7 @@ except ImportError:
     from providers import ProviderType, SituationType, get_kakao_diag, get_recommendations
     from reels_script import build_reels_script
     import medical
+    import prescriptions
     import screen_router
     from saved_places import (
         StorageError,
@@ -134,6 +135,7 @@ async def manifest() -> FileResponse:
 @app.get("/account.js")
 @app.get("/pick3.html")
 @app.get("/medical.html")
+@app.get("/prescriptions.html")
 @app.get("/start.html")
 async def extra_page(request: Request) -> FileResponse:
     """Serve the service pages next to the index.html launcher (Render origin)."""
@@ -274,6 +276,10 @@ async def ingest_screenshot(
             result["service"] = "medical"
             result["message"] = "🧾 의료비 기록\n" + result["message"]
             return result
+        if kind == "prescription":
+            result = await _save_prescriptions(user, raw, mime, filename=image.filename)
+            result["service"] = "prescription"
+            return result
     result = await _save_restaurant(user, raw, mime)
     result["service"] = "restaurant"
     if result["status"] == "saved":
@@ -384,7 +390,64 @@ async def ingest_medical(
     if usage["user_count"] > per_user_limit or usage["total_count"] > total_limit:
         return {"status": "limited", "message": f"오늘 분석 한도({per_user_limit}건)를 넘었습니다. 내일 다시 시도해 주세요."}
 
-    return await _save_medical(user, raw, medical.sniff_mime(raw, image.content_type), chosen)
+    mime = medical.sniff_mime(raw, image.content_type)
+    if prescriptions.is_prescription_pdf(raw):  # 처방조제정보 PDF -> its own table
+        return await _save_prescriptions(user, raw, mime, chosen, filename=image.filename)
+    return await _save_medical(user, raw, mime, chosen)
+
+
+async def _save_prescriptions(user: dict, raw: bytes, mime: str, chosen: str = "", filename: str | None = None) -> dict:
+    """처방·조제 rows: PDF table via pdfplumber, else Gemini. Name: given > on screen > file name > recent."""
+    missing: list[int] = []
+    on_screen = ""
+    rows: list[dict] = []
+    if mime == "application/pdf":
+        try:
+            rows, missing = prescriptions.parse_prescription_pdf(raw)
+        except Exception:
+            rows = []
+    if not rows:
+        try:
+            on_screen, rows = await prescriptions.extract_with_gemini(raw, mime)
+        except Exception as exc:
+            return {"status": "error", "message": "❌ 처방 내역 분석 실패. 잠시 후 다시 시도해 주세요.",
+                    "detail": f"{type(exc).__name__}: {str(exc)[:200]}"}
+    if not rows:
+        return {"status": "not_found", "message": "처방·조제 내역(날짜·기관·약품명)을 찾지 못했습니다."}
+
+    from_file = prescriptions.name_from_filename(filename)
+    patient, source_note = chosen, "입력한 이름"
+    if not patient and on_screen:
+        patient, source_note = on_screen, "화면의 이름"
+    if not patient and from_file:
+        patient, source_note = from_file, "파일 이름에서"
+    if not patient:
+        try:
+            patient = await prescriptions.recent_patient(user["id"])
+        except StorageError:
+            patient = ""
+        source_note = "최근 이름" if patient else ""
+    try:
+        inserted, duplicates = await prescriptions.save(
+            rows, user["id"], patient, "pdf" if mime == "application/pdf" else "image")
+    except StorageError as exc:
+        return {"status": "error", "message": "❌ 저장 실패 - 저장소 연결 문제입니다.", "detail": str(exc)}
+
+    dates = sorted(r["visit_date"] for r in rows)
+    providers = {r["provider"] for r in rows}
+    lines = [
+        "💊 처방·조제 기록",
+        f"✅ {patient or '이름 없음'}: {inserted}건 저장" + (f" (이미 있던 {duplicates}건 제외)" if duplicates else ""),
+        f"기간 {dates[0]} ~ {dates[-1]} · 기관 {len(providers)}곳",
+    ]
+    if patient and source_note in ("파일 이름에서", "최근 이름"):
+        lines.append(f"⚠ 이름은 {source_note} 가져왔습니다. 다르면 처방·조제 화면에서 바꾸세요.")
+    elif not patient:
+        lines.append("⚠ 고객·환자 이름을 찾지 못했습니다. 처방·조제 화면에서 이름을 입력하세요.")
+    if missing:
+        lines.append(f"⚠ 순번 {len(missing)}개를 읽지 못했습니다: {', '.join(map(str, missing[:10]))}")
+    return {"status": "saved", "message": "\n".join(lines), "patient": patient, "patient_source": source_note,
+            "inserted": inserted, "duplicates": duplicates, "missing": missing, "count": len(rows)}
 
 
 async def _save_medical(user: dict, raw: bytes, mime: str, chosen: str = "") -> dict:
@@ -480,6 +543,67 @@ async def edit_medical(
     if not row:
         raise HTTPException(status_code=404, detail="Record not found")
     return row
+
+
+# ---- prescription / dispensing records (처방·조제) -----------------------------
+
+
+@app.get("/api/prescriptions")
+async def list_prescriptions(
+    patient: str = "",
+    year: Optional[int] = None,
+    x_pick3_token: Optional[str] = Header(default=None),
+) -> dict:
+    user = await _current_user(x_pick3_token)
+    try:
+        rows = await prescriptions.list_rows(user["id"], patient=patient.strip(), year=year)
+    except StorageError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"user": user["name"], "count": len(rows), "items": rows}
+
+
+class PatientChange(BaseModel):
+    ids: list[int]
+    patient: str
+
+
+@app.post("/api/prescriptions/patient")
+async def change_prescription_patient(payload: PatientChange, x_pick3_token: Optional[str] = Header(default=None)) -> dict:
+    user = await _current_user(x_pick3_token)
+    if not payload.ids or len(payload.ids) > 5000:
+        raise HTTPException(status_code=422, detail="바꿀 기록을 골라 주세요.")
+    try:
+        rows = await prescriptions.set_patient(payload.ids, user["id"], payload.patient)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except StorageError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"updated": len(rows), "items": rows}
+
+
+@app.delete("/api/prescriptions")
+async def delete_prescription_patient(patient: str, x_pick3_token: Optional[str] = Header(default=None)) -> dict:
+    user = await _current_user(x_pick3_token)
+    name = patient.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="삭제할 고객·환자 이름을 지정해 주세요.")
+    try:
+        count = await prescriptions.delete_patient(user["id"], name)
+    except StorageError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"patient": name, "deleted": count}
+
+
+@app.delete("/api/prescriptions/{record_id}")
+async def delete_prescription(record_id: int, x_pick3_token: Optional[str] = Header(default=None)) -> dict:
+    user = await _current_user(x_pick3_token)
+    try:
+        deleted = await prescriptions.delete_one(record_id, user["id"])
+    except StorageError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Record not found")
+    return {"deleted": record_id}
 
 
 class MedicalPatientChange(BaseModel):
