@@ -836,7 +836,7 @@ def test_ingest_supabase_duplicate_returns_existing_row(tmp_path: Path, monkeypa
     )
     res = client.post("/api/ingest/screenshot", files={"image": ("a.jpg", b"x", "image/jpeg")}, headers=AUTH_A).json()
     assert res["status"] == "saved"
-    assert res["message"].startswith("이미 저장된 곳입니다")
+    assert res["message"].startswith("🍽️ 맛집") and "이미 저장된 곳입니다" in res["message"]
     assert res["place"]["id"] == 3
     assert calls[1][2]["params"]["address"] == "eq.성수"
     assert calls[1][2]["params"]["user_id"] == "eq.1"

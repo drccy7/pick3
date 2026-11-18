@@ -78,6 +78,8 @@ def _fake(monkeypatch: pytest.MonkeyPatch, gemini_payload: dict, insert_returns=
         async def post(self, url, **kw):
             if "generativelanguage" in url:
                 seen["gemini"].append(kw["json"])
+                if isinstance(gemini_payload, list):  # successive calls (classify, then extract)
+                    return _gemini(gemini_payload[len(seen["gemini"]) - 1])
                 return _gemini(gemini_payload)
             if url.endswith("/rpc/pick3_bump_usage"):
                 return _Resp(200, {"user_count": 1, "total_count": 1})
@@ -256,3 +258,35 @@ def test_delete_all_records_of_one_customer(monkeypatch: pytest.MonkeyPatch) -> 
     assert seen["deletes"][0][1]["params"]["patient"] == "eq.김고객"
     assert client.delete("/api/medical", params={"patient": " "}, headers=AUTH).status_code == 422
     assert client.delete("/api/medical", params={"patient": "김고객"}).status_code == 401
+
+
+def test_pick3_shortcut_routes_medical_screens_without_second_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The existing "Pick3 저장" Shortcut posts to /api/ingest/screenshot; a medical screen lands in medical records.
+    monkeypatch.delenv("PICK3_AUTO_ROUTE", raising=False)
+    monkeypatch.delenv("KAKAO_REST_API_KEY", raising=False)
+    seen = _fake(monkeypatch, [{"type": "medical"}, SCREEN])
+    res = client.post("/api/ingest/screenshot", files={"image": ("s.jpg", b"\xff\xd8\xff" + b"0" * 20, "image/jpeg")},
+                      headers=AUTH).json()
+    assert res["service"] == "medical" and res["status"] == "saved"
+    assert res["message"].startswith("🧾 의료비 기록\n✅ 정치연: 3건 저장")
+    assert seen["posts"][0][0].endswith("/pick3_medical_records")
+    assert len(seen["gemini"]) == 2
+
+
+def test_pick3_shortcut_still_saves_restaurants(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("KAKAO_REST_API_KEY", raising=False)
+    seen = _fake(monkeypatch, [{"type": "restaurant"}, {"name": "몽탄", "area": "성수"}],
+                 insert_returns=lambda body: [{**body, "id": 1}])
+    res = client.post("/api/ingest/screenshot", files={"image": ("s.jpg", b"\xff\xd8\xff" + b"0" * 20, "image/jpeg")},
+                      headers=AUTH).json()
+    assert res["service"] == "restaurant" and res["message"].startswith("🍽️ 맛집\n✅ 저장 완료: 몽탄")
+    assert seen["posts"][0][0].endswith("/pick3_saved_places")
+
+
+def test_auto_route_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PICK3_AUTO_ROUTE", "0")
+    monkeypatch.delenv("KAKAO_REST_API_KEY", raising=False)
+    seen = _fake(monkeypatch, [{"name": "몽탄", "area": "성수"}], insert_returns=lambda body: [{**body, "id": 1}])
+    res = client.post("/api/ingest/screenshot", files={"image": ("s.jpg", b"\xff\xd8\xff" + b"0" * 20, "image/jpeg")},
+                      headers=AUTH).json()
+    assert res["service"] == "restaurant" and len(seen["gemini"]) == 1  # no classification call

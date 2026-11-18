@@ -40,7 +40,7 @@ from pydantic import BaseModel, field_validator
 try:
     from .providers import ProviderType, SituationType, get_kakao_diag, get_recommendations
     from .reels_script import build_reels_script
-    from . import medical
+    from . import medical, screen_router
     from .saved_places import (
         StorageError,
         bump_usage,
@@ -58,6 +58,7 @@ except ImportError:
     from providers import ProviderType, SituationType, get_kakao_diag, get_recommendations
     from reels_script import build_reels_script
     import medical
+    import screen_router
     from saved_places import (
         StorageError,
         bump_usage,
@@ -263,8 +264,27 @@ async def ingest_screenshot(
         return {"status": "limited", "message": f"오늘 저장 한도({per_user_limit}건)를 넘었습니다. 내일 다시 시도해 주세요."}
     if usage["total_count"] > total_limit:
         return {"status": "limited", "message": "오늘 서비스 전체 분석 한도에 도달했습니다. 내일 다시 시도해 주세요."}
+
+    # One Shortcut for every service: classify first, then use that service's own extractor.
+    mime = medical.sniff_mime(raw, image.content_type or "image/jpeg")
+    if screen_router.auto_route_enabled():
+        kind = await screen_router.classify_screen(raw, mime)
+        if kind == "medical":
+            result = await _save_medical(user, raw, mime)
+            result["service"] = "medical"
+            result["message"] = "🧾 의료비 기록\n" + result["message"]
+            return result
+    result = await _save_restaurant(user, raw, mime)
+    result["service"] = "restaurant"
+    if result["status"] == "saved":
+        result["message"] = "🍽️ 맛집\n" + result["message"]
+    return result
+
+
+async def _save_restaurant(user: dict, raw: bytes, mime: str) -> dict:
+    """Extract a restaurant/cafe, verify with Kakao, save for `user`."""
     try:
-        extracted = await extract_place_from_image(raw, mime_type=image.content_type or "image/jpeg")
+        extracted = await extract_place_from_image(raw, mime_type=mime)
     except Exception as exc:
         return {
             "status": "error",
@@ -364,7 +384,11 @@ async def ingest_medical(
     if usage["user_count"] > per_user_limit or usage["total_count"] > total_limit:
         return {"status": "limited", "message": f"오늘 분석 한도({per_user_limit}건)를 넘었습니다. 내일 다시 시도해 주세요."}
 
-    mime = medical.sniff_mime(raw, image.content_type)
+    return await _save_medical(user, raw, medical.sniff_mime(raw, image.content_type), chosen)
+
+
+async def _save_medical(user: dict, raw: bytes, mime: str, chosen: str = "") -> dict:
+    """Extract + save medical rows for `user` (auth and usage limits already checked)."""
     try:
         extracted = await medical.extract_medical_records(raw, mime)
     except Exception as exc:
