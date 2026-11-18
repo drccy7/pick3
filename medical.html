@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0f1115" />
+  <meta name="referrer" content="no-referrer" />
+  <title>의료비 기록</title>
+  <style>
+    :root {
+      --bg: #0f1115; --surface: #181c24; --surface-2: #222733; --border: #2c3342;
+      --text: #f3f5f8; --muted: #9aa3b2; --accent: #ff6b35; --danger: #ff5c5c;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    body {
+      background: var(--bg); color: var(--text); min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, "Pretendard", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+      padding: 24px 16px 40px; max-width: 760px; margin: 0 auto; line-height: 1.45;
+    }
+    h1 { font-size: 22px; font-weight: 800; }
+    .sub { color: var(--muted); font-size: 13px; margin-top: 4px; }
+    .bar { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+    select, button {
+      font: inherit; font-size: 14px; color: var(--text); background: var(--surface);
+      border: 1px solid var(--border); border-radius: 10px; padding: 9px 12px;
+    }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
+    .totals { margin-top: 16px; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+    .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; }
+    .tile .k { color: var(--muted); font-size: 12px; }
+    .tile .v { font-size: 17px; font-weight: 700; margin-top: 2px; font-variant-numeric: tabular-nums; }
+    .wrap { margin-top: 16px; overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { padding: 10px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
+    th { background: var(--surface-2); color: var(--muted); font-weight: 600; font-size: 12px; position: sticky; top: 0; }
+    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    tr:last-child td { border-bottom: 0; }
+    .del { background: none; border: 0; color: var(--danger); padding: 4px 6px; font-size: 13px; }
+    .msg { margin-top: 16px; color: var(--muted); font-size: 14px; }
+    .err { color: var(--danger); }
+  </style>
+</head>
+<body>
+  <h1>🧾 의료비 기록</h1>
+  <p class="sub" id="who">병원·약국 결제 내역을 환자·연도별로 정리합니다.</p>
+
+  <div class="bar">
+    <select id="patientSel" aria-label="환자"><option value="">전체 환자</option></select>
+    <select id="yearSel" aria-label="연도"><option value="">전체 연도</option></select>
+    <select id="kindSel" aria-label="구분">
+      <option value="">전체 구분</option><option>병원</option><option>약국</option><option>안경</option><option>기타</option>
+    </select>
+    <button class="primary" id="csvBtn" type="button">엑셀(CSV) 받기</button>
+  </div>
+
+  <div class="totals" id="totals"></div>
+  <div class="wrap">
+    <table>
+      <thead><tr><th>환자</th><th>날짜</th><th>기관</th><th>구분</th><th class="num">금액</th><th></th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+  <p class="msg" id="msg">불러오는 중…</p>
+
+  <script>
+    const API = "https://pick3-api.onrender.com";
+    let all = [];
+
+    function token() {
+      const fromHash = (new URLSearchParams(location.hash.slice(1)).get("t") || "").trim();
+      try {
+        if (fromHash) { localStorage.setItem("pick3_token", fromHash); history.replaceState(null, "", location.pathname); }
+        return fromHash || localStorage.getItem("pick3_token") || "";
+      } catch { return fromHash; }
+    }
+
+    const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+    const won = (n) => `${Number(n).toLocaleString("ko-KR")}원`;
+
+    function filtered() {
+      const p = patientSel.value, y = yearSel.value, k = kindSel.value;
+      return all.filter((r) => (!p || r.patient === p) && (!y || r.visit_date.startsWith(y)) && (!k || r.kind === k));
+    }
+
+    function fillSelect(sel, values, label) {
+      const cur = sel.value;
+      sel.innerHTML = `<option value="">${label}</option>` + values.map((v) => `<option>${esc(v)}</option>`).join("");
+      if (values.includes(cur)) sel.value = cur;
+    }
+
+    function render() {
+      const rows = filtered();
+      document.getElementById("rows").innerHTML = rows.map((r) => `
+        <tr><td>${esc(r.patient || "-")}</td><td>${esc(r.visit_date)}</td><td>${esc(r.provider)}</td>
+        <td>${esc(r.kind)}</td><td class="num">${won(r.amount)}</td>
+        <td><button class="del" data-id="${r.id}" type="button">삭제</button></td></tr>`).join("");
+      const sum = (f) => rows.filter(f).reduce((a, r) => a + r.amount, 0);
+      const tiles = [["합계", sum(() => true), rows.length]]
+        .concat(["병원", "약국", "안경", "기타"].map((k) => [k, sum((r) => r.kind === k), rows.filter((r) => r.kind === k).length]))
+        .filter(([, , n], i) => i === 0 || n > 0);
+      document.getElementById("totals").innerHTML = tiles.map(([k, v, n]) =>
+        `<div class="tile"><div class="k">${k} · ${n}건</div><div class="v">${won(v)}</div></div>`).join("");
+      document.getElementById("msg").textContent = rows.length ? "" : "기록이 없습니다. 단축어 '의료비 저장'으로 결제 내역 화면을 공유해 보세요.";
+    }
+
+    async function load() {
+      const t = token();
+      const msg = document.getElementById("msg");
+      if (!t) { msg.innerHTML = '<span class="err">개인 링크(#t=…)로 열거나 Pick3 시작 페이지를 먼저 열어 주세요.</span>'; return; }
+      try {
+        const res = await fetch(`${API}/api/medical`, { headers: { "X-Pick3-Token": t } });
+        if (res.status === 401) { msg.innerHTML = '<span class="err">토큰이 맞지 않습니다.</span>'; return; }
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        all = data.items;
+        document.getElementById("who").textContent = `${data.user} 님 · ${data.count}건`;
+        fillSelect(patientSel, [...new Set(all.map((r) => r.patient || ""))].filter(Boolean).sort(), "전체 환자");
+        fillSelect(yearSel, [...new Set(all.map((r) => r.visit_date.slice(0, 4)))].sort().reverse(), "전체 연도");
+        render();
+      } catch (e) {
+        msg.innerHTML = `<span class="err">불러오지 못했습니다 (${esc(e.message)}). 서버가 깨어나는 중이면 30초 뒤 새로고침하세요.</span>`;
+      }
+    }
+
+    function downloadCsv() {
+      const rows = filtered();
+      const head = ["환자", "연도", "날짜", "기관", "구분", "금액"];
+      const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+      const lines = [head.map(q).join(",")].concat(rows.map((r) =>
+        [r.patient, r.visit_date.slice(0, 4), r.visit_date, r.provider, r.kind, r.amount].map(q).join(",")));
+      const blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `의료비_${patientSel.value || "전체"}_${yearSel.value || "전체"}.csv`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    }
+
+    document.getElementById("rows").addEventListener("click", async (e) => {
+      const id = e.target.dataset?.id;
+      if (!id || !confirm("이 기록을 삭제할까요?")) return;
+      const res = await fetch(`${API}/api/medical/${id}`, { method: "DELETE", headers: { "X-Pick3-Token": token() } });
+      if (res.ok) { all = all.filter((r) => String(r.id) !== id); render(); }
+      else alert("삭제하지 못했습니다.");
+    });
+    for (const sel of [patientSel, yearSel, kindSel]) sel.addEventListener("change", render);
+    document.getElementById("csvBtn").addEventListener("click", downloadCsv);
+    load();
+  </script>
+</body>
+</html>

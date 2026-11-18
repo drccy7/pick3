@@ -116,3 +116,18 @@ URL 콘텐츠 가져오기 → 사전 값 가져오기 → 사전 값 보기
 | 음식점 이름을 찾지 못했습니다 | 화면에 상호가 없음 |
 | ❌ 저장 실패 / 화면 분석 실패 | 서버·외부 API 문제. 잠시 후 재시도 |
 | Invalid or missing X-Pick3-Token | 헤더 이름·토큰 오타, 등록 안 된 토큰, 사용 중지된 사용자 |
+
+## 의료비 기록 (보험금 청구용)
+
+병원·약국 결제 내역 화면(스크린샷) 또는 PDF를 공유하면 **환자 이름 + 기관·구분·금액·날짜**를 표로 저장합니다. 보기: `medical.html` (환자·연도·구분 필터, 합계, 엑셀용 CSV, 행 삭제).
+
+- 처음 한 번: Supabase에서 `docs/SUPABASE_MIGRATION_003_medical.sql` 실행
+- API: `POST /api/ingest/medical`(multipart `image`, 이미지·PDF), `GET /api/medical?patient=&year=`, `DELETE /api/medical/{id}` — 모두 `X-Pick3-Token`
+- 중복: 같은 환자·기관·날짜·금액은 한 번만 저장(스크롤하며 여러 장 캡처해도 안전). 잘려서 안 보이는 행은 추측하지 않고 뺌
+- 이름 탭이 여러 개인 화면은 **선택된 탭의 이름**을 환자로 씀
+
+**단축어 "의료비 저장"** (Pick3 저장을 복제해서 수정)
+1. Pick3 저장 길게 누르기 → 복제 → 이름 `의료비 저장`
+2. 맨 위 받기 블록 입력 유형: `이미지`와 `PDF` 켜기
+3. **이미지 변환** 블록 삭제 (PDF는 변환 불가, 서버가 PNG·JPEG·HEIC·PDF를 직접 받음)
+4. URL 콘텐츠 가져오기: URL을 `https://pick3-api.onrender.com/api/ingest/medical`로, 본문 필드 `image` 값을 `조건문 결과`로

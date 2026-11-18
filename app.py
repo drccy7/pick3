@@ -40,6 +40,7 @@ from pydantic import BaseModel, field_validator
 try:
     from .providers import ProviderType, SituationType, get_kakao_diag, get_recommendations
     from .reels_script import build_reels_script
+    from . import medical
     from .saved_places import (
         StorageError,
         bump_usage,
@@ -56,6 +57,7 @@ try:
 except ImportError:
     from providers import ProviderType, SituationType, get_kakao_diag, get_recommendations
     from reels_script import build_reels_script
+    import medical
     from saved_places import (
         StorageError,
         bump_usage,
@@ -81,7 +83,7 @@ app.add_middleware(
         "http://127.0.0.1:8088",
         "http://localhost:8088",
     ],
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 if STATIC_DIR.exists():
@@ -317,3 +319,87 @@ async def saved_pick3(
         return await pick3_from_saved(area=payload.area, lat=payload.lat, lng=payload.lng, user_id=user["id"])
     except StorageError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+# ---- medical expense records (병원·약국 결제 내역) ---------------------------
+
+
+@app.post("/api/ingest/medical")
+async def ingest_medical(
+    image: UploadFile = File(...),
+    x_pick3_token: Optional[str] = Header(default=None),
+) -> dict:
+    """Screenshot or PDF of hospital/pharmacy payments -> rows saved for the token's user."""
+    user = await _current_user(x_pick3_token)
+    raw = await image.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Empty upload")
+    if len(raw) > medical.MAX_UPLOAD_BYTES:
+        return {"status": "error", "message": "❌ 파일이 너무 큽니다(15MB 초과). 쪽을 나눠 보내 주세요."}
+    if not os.getenv("GEMINI_API_KEY", "").strip():
+        return {"status": "error", "message": "❌ 서버에 GEMINI_API_KEY가 설정되지 않아 분석할 수 없습니다."}
+    try:
+        usage = await bump_usage(user["id"])
+    except StorageError as exc:
+        return {"status": "error", "message": "❌ 저장소 연결 문제입니다. 잠시 후 다시 시도해 주세요.", "detail": str(exc)}
+    per_user_limit, total_limit = _daily_limits(user)
+    if usage["user_count"] > per_user_limit or usage["total_count"] > total_limit:
+        return {"status": "limited", "message": f"오늘 분석 한도({per_user_limit}건)를 넘었습니다. 내일 다시 시도해 주세요."}
+
+    mime = medical.sniff_mime(raw, image.content_type)
+    try:
+        extracted = await medical.extract_medical_records(raw, mime)
+    except Exception as exc:
+        return {
+            "status": "error",
+            "message": "❌ 분석 실패 (Gemini). 잠시 후 다시 시도해 주세요.",
+            "detail": f"{type(exc).__name__}: {str(exc)[:200]}",
+        }
+    patient, rows, skipped = medical.normalize_records(extracted)
+    if not rows:
+        return {"status": "not_found", "message": "결제 내역(기관·금액·날짜)을 찾지 못했습니다. 내역이 보이는 화면으로 다시 시도해 주세요."}
+    try:
+        inserted, duplicates = await medical.save_medical_records(
+            rows, user["id"], "pdf" if mime == "application/pdf" else "image")
+    except StorageError as exc:
+        return {"status": "error", "message": "❌ 저장 실패 - 저장소 연결 문제입니다.", "detail": str(exc)}
+
+    who = patient or "이름 없음"
+    total = sum(r["amount"] for r in rows)
+    lines = [f"✅ {who}: {inserted}건 저장" + (f" (이미 있던 {duplicates}건 제외)" if duplicates else "")]
+    lines += [f"{r['visit_date']} {r['provider']} {r['amount']:,}원" for r in rows[:15]]
+    if len(rows) > 15:
+        lines.append(f"… 외 {len(rows) - 15}건")
+    lines.append(f"화면 합계 {total:,}원")
+    if not patient:
+        lines.append("⚠ 환자 이름을 찾지 못했습니다. 이름 탭이 보이게 캡처하면 구분됩니다.")
+    if skipped:
+        lines.append(f"⚠ 잘려서 읽지 못한 {skipped}건은 빠졌습니다. 스크롤해서 한 장 더 보내 주세요.")
+    return {"status": "saved", "message": "\n".join(lines), "patient": patient,
+            "inserted": inserted, "duplicates": duplicates, "skipped": skipped, "records": rows}
+
+
+@app.get("/api/medical")
+async def list_medical(
+    patient: str = "",
+    year: Optional[int] = None,
+    x_pick3_token: Optional[str] = Header(default=None),
+) -> dict:
+    user = await _current_user(x_pick3_token)
+    try:
+        rows = await medical.list_medical_records(user["id"], patient=patient.strip(), year=year)
+    except StorageError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"user": user["name"], "count": len(rows), "items": rows, "totals": medical.summarize(rows)}
+
+
+@app.delete("/api/medical/{record_id}")
+async def delete_medical(record_id: int, x_pick3_token: Optional[str] = Header(default=None)) -> dict:
+    user = await _current_user(x_pick3_token)
+    try:
+        deleted = await medical.delete_medical_record(record_id, user["id"])
+    except StorageError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Record not found")
+    return {"deleted": record_id}
