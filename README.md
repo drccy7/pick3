@@ -22,3 +22,62 @@ uvicorn app:app --host 0.0.0.0 --port 8088
 ```bash
 pytest tests/test_pick3_api.py -v
 ```
+
+## 인스타 맛집 저장 (iPhone 뒷면 탭)
+
+인스타 게시물을 보다가 **iPhone 뒷면을 두 번 탭**하면 화면을 분석해 맛집을 저장합니다. 저장한 곳은 앱의 **📌 내 저장**에서 가까운 순·동네 순으로 3곳 추천됩니다.
+
+```
+뒷면 탭 → 단축어: 스크린샷 → JPEG → POST /api/ingest/screenshot
+ → Gemini(PICK3_GEMINI_MODEL)가 상호·동네·메뉴 추출
+ → 카카오 로컬로 같은 가게(음식점 FD6·카페 CE7)인지 확인, 주소·좌표 확정
+ → Supabase 저장(상호+주소 중복 무시) → 결과 문구 표시
+```
+
+### 서버 환경변수 (Render)
+
+| 키 | 설명 |
+|---|---|
+| `SUPABASE_URL`, `SUPABASE_KEY` | 저장소. 키는 **secret 키(`sb_secret_…`)**. 테이블은 `docs/SUPABASE_SETUP.sql` 실행 |
+| `GEMINI_API_KEY` | 화면 분석 |
+| `PICK3_GEMINI_MODEL` | 선택. 기본 `gemini-3.5-flash-lite`. 인식이 약하면 `gemini-3.8-flash` |
+| `KAKAO_REST_API_KEY` | 가게 확인·좌표 |
+| `PICK3_INGEST_TOKEN` | 업로드 인증 토큰. 단축어 헤더와 같은 값 |
+
+> Render 서비스는 Auto-Deploy가 꺼져 있습니다. push 후 **Manual Deploy → Deploy latest commit**. 환경변수만 바꿀 때는 "Save only" 후 배포.
+> 확인: `GET /api/health` → `storage_ok`, `gemini_key_configured`, `ingest_auth_configured`가 모두 `true`.
+
+### 단축어 만들기 (iOS 18+ 한국어 기준)
+
+단축어 앱 → **＋** → 제목을 눌러 **이름 변경: `Pick3 저장`**. 아래 동작을 순서대로 추가합니다.
+
+1. **스크린샷 찍기**
+2. **이미지 변환** → 형식 `JPEG`, `>` 눌러 **메타데이터 유지 끔**
+3. **URL 콘텐츠 가져오기**
+   - URL: `https://pick3-api.onrender.com/api/ingest/screenshot`
+   - `>` 펼치기 → **메소드 `POST`** (GET이면 "Method Not Allowed")
+   - **헤더** → 새로운 헤더 추가: `X-Pick3-Token` = `<PICK3_INGEST_TOKEN 값>`
+   - **본문 요청** → `형식`(양식) → **새로운 필드 추가 → 파일** → 키 `image`, 값은 파란 변수 **변환된 이미지**
+     (키 칸에 변수를 넣지 않도록 주의. 헤더가 아니라 본문 필드입니다)
+4. **사전 값 가져오기** → `URL 콘텐츠`에서 `message`에 대한 값
+5. **콘텐츠 보기** → 파란 **사전 값** (예전 이름 "결과 보기")
+   - "시스템 알림 보기"는 단축어 앱에 알림 권한이 없으면 아무것도 안 뜹니다. 콘텐츠 보기를 쓰세요.
+
+편집 화면에는 "완료" 버튼이 없습니다(자동 저장, 왼쪽 위 ‹ 로 나가기).
+
+**뒷면 탭 연결**: 설정 → 손쉬운 사용 → 터치 → 뒷면 탭 → 이중 탭 → `Pick3 저장`.
+
+### 사용 요령과 결과 문구
+
+- 인스타에서 **캡션 "…더 보기"를 펼친 뒤** 탭하면 정확합니다(📍상호·주소가 보이게).
+- 단축어 편집 화면에서 ▶로 실행하면 단축어 앱 화면이 찍혀 "찾지 못했습니다"가 정상입니다.
+- 처음엔 "연결 허용"이 뜰 수 있음 → 항상 허용. 서버가 잠들어 있으면 첫 응답 30~50초.
+
+| 문구 | 의미 |
+|---|---|
+| ✅ 저장 완료: 상호 (동네) | 저장됨 |
+| 이미 저장된 곳입니다 | 같은 상호·주소가 이미 있음 |
+| ⚠ …위치 확인 필요 | 저장했지만 카카오에서 같은 가게를 확정 못 함(좌표 없음). 지점·동네가 보이는 화면으로 다시 |
+| 음식점 이름을 찾지 못했습니다 | 화면에 상호가 없음 |
+| ❌ 저장 실패 / 화면 분석 실패 | 서버·외부 API 문제. 잠시 후 재시도 |
+| Invalid or missing X-Pick3-Token | 헤더 이름·토큰 오타 |

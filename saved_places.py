@@ -5,8 +5,10 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import sqlite3
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from pathlib import Path
 
 import httpx
@@ -108,8 +110,53 @@ async def extract_place_from_image(image_bytes: bytes, mime_type: str = "image/j
     }
 
 
+KAKAO_PLACE_GROUPS = {"FD6", "CE7"}  # 음식점, 카페
+
+
+def _norm_name(text: str) -> str:
+    """Lowercase and drop spaces/punctuation so '선릉 마구로동우니도' ~ '마구로동우니도 선릉점'."""
+    return re.sub(r"[^0-9a-z가-힣]", "", (text or "").lower())
+
+
+def _name_matches(extracted: str, place_name: str) -> bool:
+    """True when the Kakao place is plausibly the same shop as the name read from the screenshot.
+
+    Branch suffixes ('선릉점') and area prefixes make exact equality too strict, so accept
+    containment either way, else a fuzzy ratio. Short names (<2 chars) never match fuzzily.
+    """
+    a, b = _norm_name(extracted), _norm_name(place_name)
+    if len(a) < 2 or not b:
+        return False
+    if a in b or b in a:
+        return True
+    return SequenceMatcher(None, a, b).ratio() >= 0.6
+
+
+def _pick_kakao_doc(extracted: dict, docs: list[dict]) -> dict | None:
+    """Choose the Kakao result that is the same shop, or None if unsure.
+
+    - only restaurant/cafe groups count
+    - the name must match (no blind 'first result')
+    - with no area hint, several matching branches are ambiguous -> None
+    """
+    candidates = [
+        d for d in docs
+        if d.get("category_group_code") in KAKAO_PLACE_GROUPS
+        and _name_matches(extracted["name"], d.get("place_name", ""))
+    ]
+    if not candidates:
+        return None
+    if not extracted.get("area") and len(candidates) > 1:
+        return None
+    return candidates[0]
+
+
 async def resolve_place_with_kakao(extracted: dict) -> dict:
-    """Resolve extracted restaurant name + area to exact Kakao coordinates and map links."""
+    """Resolve extracted name + area to the exact Kakao place (restaurant or cafe).
+
+    `verified` is True only when a Kakao place was matched; otherwise coordinates stay
+    empty and the place is saved as "위치 확인 필요" instead of guessing a branch.
+    """
     name = extracted["name"]
     area = extracted["area"]
     naver_url, kakao_url = _build_map_urls(name, area)
@@ -121,6 +168,7 @@ async def resolve_place_with_kakao(extracted: dict) -> dict:
         "phone": "",
         "kakao_url": kakao_url,
         "naver_url": naver_url,
+        "verified": False,
     }
 
     kakao_key = os.getenv("KAKAO_REST_API_KEY", "").strip()
@@ -133,12 +181,12 @@ async def resolve_place_with_kakao(extracted: dict) -> dict:
             resp = await client.get(
                 "https://dapi.kakao.com/v2/local/search/keyword.json",
                 headers={"Authorization": f"KakaoAK {kakao_key}"},
-                params={"query": kw, "category_group_code": "FD6", "size": 3},
+                # No category filter: one call covers both FD6 and CE7; filtered in _pick_kakao_doc.
+                params={"query": kw, "size": 10},
             )
             if resp.status_code == 200:
-                docs = resp.json().get("documents", [])
-                if docs:
-                    top = docs[0]
+                top = _pick_kakao_doc(extracted, resp.json().get("documents", []))
+                if top:
                     resolved["name"] = top.get("place_name") or name
                     resolved["address"] = top.get("road_address_name") or top.get("address_name") or resolved["address"]
                     resolved["lat"] = float(top["y"]) if top.get("y") else None
@@ -146,6 +194,7 @@ async def resolve_place_with_kakao(extracted: dict) -> dict:
                     resolved["phone"] = str(top.get("phone") or "").strip()
                     resolved["kakao_url"] = top.get("place_url") or kakao_url
                     resolved["naver_url"] = _build_map_urls(resolved["name"], area)[0]
+                    resolved["verified"] = True
     except Exception:
         pass
     return resolved
@@ -358,8 +407,8 @@ async def pick3_from_saved(
                 kakao_map_url=r.get("kakao_url") or _build_map_urls(r["name"], r.get("area", ""))[1],
                 phone=r.get("phone") or "",
                 distance_text=dist_text,
-                role_badge="내 저장 픽",
-                is_verified_detail=True,
+                role_badge="내 저장 픽" if r.get("lat") else "내 저장 · 위치 확인 필요",
+                is_verified_detail=bool(r.get("lat")),
             )
         )
 

@@ -694,6 +694,7 @@ def test_ingest_screenshot_and_recall_saved_pick3(
                     "documents": [
                         {
                             "place_name": "몽탄 성수직영점",
+                            "category_group_code": "FD6",
                             "road_address_name": "서울 성동구 연무장길 1",
                             "x": "127.055",
                             "y": "37.544",
@@ -882,3 +883,83 @@ def test_gemini_model_env_override_and_key_in_header(tmp_path: Path, monkeypatch
     client.post("/api/ingest/screenshot", files={"image": ("a.jpg", b"x", "image/jpeg")})
     assert "/models/gemini-3.8-flash:generateContent" in seen["url"]
     assert "key=" not in seen["url"] and seen["headers"]["x-goog-api-key"] == "fake_gemini"
+
+
+
+def _kakao_doc(name: str, group: str = "FD6", addr: str = "서울 어딘가 1") -> dict:
+    return {"place_name": name, "category_group_code": group, "road_address_name": addr,
+            "x": "127.0", "y": "37.5", "phone": "", "place_url": "http://place.map.kakao.com/1"}
+
+
+@pytest.mark.parametrize(
+    "extracted,place_name,expected",
+    [
+        ("선릉 마구로동우니도", "마구로동우니도 선릉점", True),   # area prefix vs branch suffix
+        ("마구로동우니도", "마구로동우니도 선릉점", True),
+        ("Blue Bottle", "블루보틀 성수", False),                 # different script: honest miss
+        ("몽탄", "몽중헌 성수점", False),
+        ("카페", "카페 노티드 청담", False),                     # too generic? contained -> see below
+    ],
+)
+def test_name_matches(extracted: str, place_name: str, expected: bool) -> None:
+    from saved_places import _name_matches
+
+    if extracted == "카페":
+        # generic words are contained in many names; containment accepts them, so only the
+        # Kakao query (area + name) and the ambiguity rule protect us here.
+        assert _name_matches(extracted, place_name) is True
+        return
+    assert _name_matches(extracted, place_name) is expected
+
+
+def test_pick_kakao_doc_cafe_mismatch_and_ambiguity() -> None:
+    from saved_places import _pick_kakao_doc
+
+    cafe = _pick_kakao_doc({"name": "어니언", "area": "성수"}, [_kakao_doc("어니언 성수", "CE7")])
+    assert cafe and cafe["place_name"] == "어니언 성수"  # cafes (CE7) now resolve
+
+    assert _pick_kakao_doc({"name": "어니언", "area": "성수"}, [_kakao_doc("어니언 주차장", "PK6")]) is None
+    assert _pick_kakao_doc({"name": "몽탄", "area": "성수"}, [_kakao_doc("우감만족")]) is None  # no blind first hit
+
+    two = [_kakao_doc("마구로동우니도 선릉점"), _kakao_doc("마구로동우니도 강남점")]
+    assert _pick_kakao_doc({"name": "마구로동우니도", "area": ""}, two) is None  # ambiguous branch
+    assert _pick_kakao_doc({"name": "마구로동우니도", "area": "선릉"}, two)["place_name"] == "마구로동우니도 선릉점"
+
+
+def test_ingest_unverified_place_is_flagged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    monkeypatch.setenv("PICK3_SQLITE_PATH", str(tmp_path / "t.db"))
+    monkeypatch.setenv("GEMINI_API_KEY", "g")
+    monkeypatch.setenv("KAKAO_REST_API_KEY", "k")
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_KEY", raising=False)
+
+    gem = _SbResp(200, {"candidates": [{"content": {"parts": [{"text": '{"name": "몽탄", "area": "성수"}'}]}}]})
+    gem.raise_for_status = lambda: None
+
+    class FakeClient:
+        def __init__(self, *a, **k) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a) -> None:
+            pass
+
+        async def post(self, url, **kwargs):
+            return gem
+
+        async def get(self, url, **kwargs):
+            assert "category_group_code" not in kwargs["params"]  # one call covers FD6 + CE7
+            return _SbResp(200, {"documents": [_kakao_doc("우감만족", addr="서울 강남구 압구정로54길 26")]})
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+    body = client.post("/api/ingest/screenshot", files={"image": ("a.jpg", b"x", "image/jpeg")}).json()
+    assert body["status"] == "saved" and body["verified"] is False
+    assert "위치 확인 필요" in body["message"]
+    assert body["place"]["name"] == "몽탄" and body["place"]["lat"] is None  # not replaced by 우감만족
+
+    recall = client.post("/api/saved/pick3", json={"area": "성수"}).json()
+    assert recall["top_pick"]["role_badge"] == "내 저장 · 위치 확인 필요"

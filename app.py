@@ -227,9 +227,13 @@ async def ingest_screenshot(
         }
     area_text = saved.get("area") or saved.get("address") or ""
     prefix = "이미 저장된 곳입니다" if saved.get("duplicate") else "✅ 저장 완료"
+    message = f"{prefix}: {saved['name']}" + (f" ({area_text})" if area_text else "")
+    if not resolved.get("verified"):
+        message += "\n⚠ 지도에서 가게를 확정하지 못했습니다(위치 확인 필요). 동네·지점이 보이는 화면에서 다시 시도하면 정확해집니다."
     return {
         "status": "saved",
-        "message": f"{prefix}: {saved['name']}" + (f" ({area_text})" if area_text else ""),
+        "message": message,
+        "verified": bool(resolved.get("verified")),
         "place": saved,
     }
 
