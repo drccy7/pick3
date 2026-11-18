@@ -27,6 +27,10 @@ def _reset_cache() -> None:
 def _no_ingest_token_from_local_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """app.py loads a local .env; keep ingest open unless a test sets the token."""
     monkeypatch.delenv("PICK3_INGEST_TOKEN", raising=False)
+    import saved_places
+
+    saved_places.clear_user_cache()
+    saved_places._LOCAL_USAGE.clear()
 
 
 def test_health_and_index_served() -> None:
@@ -737,9 +741,26 @@ class _SbResp:
         return self._payload
 
 
-def _patch_ingest_upstreams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, sb_post, sb_get, calls: list) -> None:
-    """Fake Gemini + Kakao + Supabase. Kakao key unset so only Gemini/Supabase are hit."""
+TOKEN_A = "p3_token_user_a"
+AUTH_A = {"X-Pick3-Token": TOKEN_A}
+USER_A = {"id": 1, "name": "A", "daily_limit": None, "disabled": False}
+
+
+def _patch_ingest_upstreams(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, sb_post, sb_get, calls: list,
+    usage=lambda: _SbResp(200, {"user_count": 1, "total_count": 1}),
+    users: dict | None = None, gemini_calls: list | None = None,
+) -> None:
+    """Fake Gemini + Kakao + Supabase. Kakao key unset so only Gemini/Supabase are hit.
+
+    `calls` records only pick3_saved_places traffic; pick3_users lookups and the usage RPC are
+    answered separately. `users` maps token -> user row (default: TOKEN_A is user 1).
+    """
     import httpx
+
+    from saved_places import hash_token
+
+    known = {hash_token(t): u for t, u in (users or {TOKEN_A: USER_A}).items()}
 
     monkeypatch.setenv("PICK3_SQLITE_PATH", str(tmp_path / "must_not_be_used.db"))
     monkeypatch.setenv("GEMINI_API_KEY", "fake_gemini")
@@ -762,11 +783,18 @@ def _patch_ingest_upstreams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, sb_
 
         async def post(self, url, **kwargs):
             if "generativelanguage" in url:
+                if gemini_calls is not None:
+                    gemini_calls.append(url)
                 return gemini
+            if url.endswith("/rpc/pick3_bump_usage"):
+                return usage()
             calls.append(("post", url, kwargs))
             return sb_post()
 
         async def get(self, url, **kwargs):
+            if url.endswith("/pick3_users"):
+                h = kwargs["params"]["token_hash"][len("eq."):]
+                return _SbResp(200, [known[h]] if h in known else [])
             calls.append(("get", url, kwargs))
             return sb_get()
 
@@ -781,12 +809,13 @@ def test_ingest_supabase_upsert_uses_secret_key_header(tmp_path: Path, monkeypat
         sb_get=lambda: _SbResp(200, []),
         calls=calls,
     )
-    res = client.post("/api/ingest/screenshot", files={"image": ("a.jpg", b"x", "image/jpeg")}).json()
+    res = client.post("/api/ingest/screenshot", files={"image": ("a.jpg", b"x", "image/jpeg")}, headers=AUTH_A).json()
     assert res["status"] == "saved"
     assert res["place"]["storage"] == "supabase" and res["place"]["duplicate"] is False
     method, url, kwargs = calls[0]
     assert url == "https://example.supabase.co/rest/v1/pick3_saved_places"
-    assert kwargs["params"] == {"on_conflict": "name,address"}
+    assert kwargs["params"] == {"on_conflict": "user_id,name,address"}
+    assert kwargs["json"]["user_id"] == 1
     assert "resolution=ignore-duplicates" in kwargs["headers"]["Prefer"]
     assert kwargs["headers"]["apikey"] == "sb_secret_fake"
     assert "Authorization" not in kwargs["headers"]  # sb_secret_ keys are not JWTs
@@ -801,11 +830,12 @@ def test_ingest_supabase_duplicate_returns_existing_row(tmp_path: Path, monkeypa
         sb_get=lambda: _SbResp(200, [{"id": 3, "name": "몽탄", "area": "성수", "address": "성수"}]),
         calls=calls,
     )
-    res = client.post("/api/ingest/screenshot", files={"image": ("a.jpg", b"x", "image/jpeg")}).json()
+    res = client.post("/api/ingest/screenshot", files={"image": ("a.jpg", b"x", "image/jpeg")}, headers=AUTH_A).json()
     assert res["status"] == "saved"
     assert res["message"].startswith("이미 저장된 곳입니다")
     assert res["place"]["id"] == 3
     assert calls[1][2]["params"]["address"] == "eq.성수"
+    assert calls[1][2]["params"]["user_id"] == "eq.1"
 
 
 def test_ingest_supabase_failure_reports_error_without_sqlite_fallback(
@@ -818,39 +848,101 @@ def test_ingest_supabase_failure_reports_error_without_sqlite_fallback(
         sb_get=lambda: _SbResp(401, {"message": "Invalid API key"}),
         calls=calls,
     )
-    res = client.post("/api/ingest/screenshot", files={"image": ("a.jpg", b"x", "image/jpeg")}).json()
+    res = client.post("/api/ingest/screenshot", files={"image": ("a.jpg", b"x", "image/jpeg")}, headers=AUTH_A).json()
     assert res["status"] == "error"
     assert "저장 실패" in res["message"] and "401" in res["detail"]
     assert not (tmp_path / "must_not_be_used.db").exists()
 
-    assert client.get("/api/saved").status_code == 503
-    assert client.post("/api/saved/pick3", json={"area": "성수"}).status_code == 503
+    assert client.get("/api/saved", headers=AUTH_A).status_code == 503
+    assert client.post("/api/saved/pick3", json={"area": "성수"}, headers=AUTH_A).status_code == 503
     health = client.get("/api/health").json()
     assert health["storage"] == "supabase" and health["storage_ok"] is False
 
 
-def test_ingest_requires_token_when_configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_supabase_mode_requires_registered_user_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list = []
+    gemini_calls: list = []
     _patch_ingest_upstreams(
         monkeypatch, tmp_path,
         sb_post=lambda: _SbResp(201, [{"id": 1, "name": "몽탄", "area": "성수", "address": "성수"}]),
         sb_get=lambda: _SbResp(200, []),
-        calls=calls,
+        calls=calls, gemini_calls=gemini_calls,
+        users={TOKEN_A: USER_A, "p3_disabled": {"id": 2, "name": "B", "daily_limit": None, "disabled": True}},
     )
+    # The old shared env token is not a user token in Supabase mode.
     monkeypatch.setenv("PICK3_INGEST_TOKEN", "s3cret-token")
     files = {"image": ("a.jpg", b"x", "image/jpeg")}
 
-    assert client.post("/api/ingest/screenshot", files=files).status_code == 401
-    assert client.post("/api/ingest/screenshot", files=files, headers={"X-Pick3-Token": "wrong"}).status_code == 401
-    assert calls == []  # rejected before Gemini/Supabase are touched
+    for headers in ({}, {"X-Pick3-Token": "wrong"}, {"X-Pick3-Token": "s3cret-token"}, {"X-Pick3-Token": "p3_disabled"}):
+        assert client.post("/api/ingest/screenshot", files=files, headers=headers).status_code == 401
+    assert client.get("/api/saved").status_code == 401
+    assert client.post("/api/saved/pick3", json={"area": ""}).status_code == 401
+    assert calls == [] and gemini_calls == []  # rejected before Gemini/Supabase data are touched
 
-    ok = client.post("/api/ingest/screenshot", files=files, headers={"X-Pick3-Token": "s3cret-token"})
+    ok = client.post("/api/ingest/screenshot", files=files, headers=AUTH_A)
     assert ok.status_code == 200 and ok.json()["status"] == "saved"
-    assert client.get("/api/health").json()["ingest_auth_configured"] is True
+    assert client.get("/api/me", headers=AUTH_A).json() == {"name": "A", "auth_mode": "per_user"}
+    health = client.get("/api/health").json()
+    assert health["auth_mode"] == "per_user" and health["ingest_auth_configured"] is True
+
+
+def test_saved_list_is_filtered_by_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list = []
+    _patch_ingest_upstreams(
+        monkeypatch, tmp_path,
+        sb_post=lambda: _SbResp(201, []),
+        sb_get=lambda: _SbResp(200, [{"id": 5, "name": "몽탄", "area": "성수", "address": "성수", "lat": None}]),
+        calls=calls,
+        users={TOKEN_A: USER_A, "p3_b": {"id": 2, "name": "B", "daily_limit": None, "disabled": False}},
+    )
+    body = client.get("/api/saved", headers={"X-Pick3-Token": "p3_b"}).json()
+    assert body["user"] == "B" and body["count"] == 1
+    assert calls[-1][2]["params"]["user_id"] == "eq.2"
+    client.post("/api/saved/pick3", json={"area": "성수"}, headers=AUTH_A)
+    assert calls[-1][2]["params"]["user_id"] == "eq.1"
+
+
+def test_daily_limits_stop_before_gemini(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list = []
+    gemini_calls: list = []
+    counts = {"user_count": 31, "total_count": 31}
+    _patch_ingest_upstreams(
+        monkeypatch, tmp_path,
+        sb_post=lambda: _SbResp(201, [{"id": 1, "name": "몽탄", "area": "성수", "address": "성수"}]),
+        sb_get=lambda: _SbResp(200, []),
+        calls=calls, gemini_calls=gemini_calls,
+        usage=lambda: _SbResp(200, dict(counts)),
+    )
+    monkeypatch.delenv("PICK3_DAILY_LIMIT_PER_USER", raising=False)
+    monkeypatch.delenv("PICK3_DAILY_LIMIT_TOTAL", raising=False)
+    files = {"image": ("a.jpg", b"x", "image/jpeg")}
+    res = client.post("/api/ingest/screenshot", files=files, headers=AUTH_A).json()
+    assert res["status"] == "limited" and "30건" in res["message"]
+
+    counts.update(user_count=2, total_count=301)
+    res = client.post("/api/ingest/screenshot", files=files, headers=AUTH_A).json()
+    assert res["status"] == "limited" and "전체" in res["message"]
+    assert gemini_calls == [] and calls == []
+
+    counts.update(user_count=2, total_count=2)
+    assert client.post("/api/ingest/screenshot", files=files, headers=AUTH_A).json()["status"] == "saved"
+
+
+def test_local_mode_shared_env_token(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_KEY", raising=False)
+    monkeypatch.setenv("PICK3_SQLITE_PATH", str(tmp_path / "local.db"))
+    assert client.get("/api/health").json()["auth_mode"] == "open"
+    monkeypatch.setenv("PICK3_INGEST_TOKEN", "s3cret-token")
+    assert client.get("/api/saved").status_code == 401
+    assert client.get("/api/saved", headers={"X-Pick3-Token": "s3cret-token"}).status_code == 200
+    assert client.get("/api/health").json()["auth_mode"] == "shared_token"
 
 
 def test_ingest_reports_missing_gemini_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("SUPABASE_URL", raising=False)  # local .env may configure Supabase
+    monkeypatch.delenv("SUPABASE_KEY", raising=False)
     res = client.post("/api/ingest/screenshot", files={"image": ("a.jpg", b"x", "image/jpeg")})
     assert res.status_code == 200
     assert res.json()["status"] == "error" and "GEMINI_API_KEY" in res.json()["message"]
@@ -880,7 +972,7 @@ def test_gemini_model_env_override_and_key_in_header(tmp_path: Path, monkeypatch
     assert client.get("/api/health").json()["gemini_model"] == "gemini-3.5-flash-lite"
 
     monkeypatch.setenv("PICK3_GEMINI_MODEL", "gemini-3.8-flash")
-    client.post("/api/ingest/screenshot", files={"image": ("a.jpg", b"x", "image/jpeg")})
+    client.post("/api/ingest/screenshot", files={"image": ("a.jpg", b"x", "image/jpeg")}, headers=AUTH_A)
     assert "/models/gemini-3.8-flash:generateContent" in seen["url"]
     assert "key=" not in seen["url"] and seen["headers"]["x-goog-api-key"] == "fake_gemini"
 

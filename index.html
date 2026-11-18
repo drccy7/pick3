@@ -590,6 +590,32 @@
       return localStorage.getItem("pick3_api_base") || "";
     }
 
+    // Per-user token for "내 저장". Given once via ?token=... link or pasted; kept on this device only.
+    function captureTokenFromUrl() {
+      const params = new URLSearchParams(location.search);
+      const t = (params.get("token") || "").trim();
+      if (!t) return;
+      try { localStorage.setItem("pick3_token", t); } catch {}
+      params.delete("token");
+      const qs = params.toString();
+      history.replaceState(null, "", location.pathname + (qs ? `?${qs}` : "") + location.hash);
+    }
+
+    function getToken() {
+      try { return localStorage.getItem("pick3_token") || ""; } catch { return ""; }
+    }
+
+    function askToken(reason) {
+      const typed = prompt(`${reason}
+
+받은 Pick3 토큰을 붙여넣어 주세요:`, "");
+      const t = (typed || "").trim();
+      if (t) {
+        try { localStorage.setItem("pick3_token", t); } catch {}
+      }
+      return t;
+    }
+
     async function fetchRecommendation() {
       const query = menuInput.value.trim();
       const area = areaInput.value.trim();
@@ -603,6 +629,14 @@
       const isStaticHost = location.hostname.endsWith("github.io") || location.protocol === "file:";
       const shouldCallBackend = Boolean(apiBase) || !isStaticHost;
       if (shouldCallBackend) {
+        let token = "";
+        if (currentProvider === "saved") {
+          token = getToken() || askToken("'내 저장'은 본인 저장 목록만 보여 줍니다.");
+          if (!token) {
+            showError("'내 저장'을 보려면 Pick3 토큰이 필요합니다.");
+            return;
+          }
+        }
         try {
           const endpoint = currentProvider === "saved" ? "/api/saved/pick3" : "/api/recommend";
           const reqBody =
@@ -618,9 +652,16 @@
                 };
           const res = await fetch(`${apiBase}${endpoint}`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: token
+              ? { "Content-Type": "application/json", "X-Pick3-Token": token }
+              : { "Content-Type": "application/json" },
             body: JSON.stringify(reqBody),
           });
+          if (res.status === 401 && currentProvider === "saved") {
+            try { localStorage.removeItem("pick3_token"); } catch {}
+            showError("토큰이 맞지 않습니다. 다시 '찾기'를 누르고 받은 토큰을 붙여넣어 주세요.");
+            return;
+          }
           if (res.ok) {
             const data = await res.json();
             lastData = data;
@@ -1077,6 +1118,7 @@
       } catch {}
     }
 
+    captureTokenFromUrl();
     restorePrefs();
     renderMenuChips();
     fetchRecommendation();

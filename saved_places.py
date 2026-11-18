@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
+import secrets
 import sqlite3
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -243,6 +246,92 @@ async def storage_status() -> dict:
     return {"storage": "supabase", "storage_ok": ok, "storage_note": note}
 
 
+def supabase_configured() -> bool:
+    return _supabase_headers() is not None
+
+
+# ---- users (per-user tokens) ------------------------------------------------
+USERS_TABLE = "pick3_users"
+_USER_CACHE: dict[str, tuple[float, dict | None]] = {}
+_USER_CACHE_TTL = 300.0  # known user: 5 min (a disabled token stops within 5 min)
+_USER_MISS_TTL = 30.0  # unknown token: 30 s (a freshly issued token works quickly)
+
+
+def hash_token(token: str) -> str:
+    """Tokens are long random strings, so plain SHA-256 is enough (no slow KDF needed)."""
+    return hashlib.sha256(token.strip().encode("utf-8")).hexdigest()
+
+
+def new_token() -> str:
+    return "p3_" + secrets.token_urlsafe(24)
+
+
+def clear_user_cache() -> None:
+    _USER_CACHE.clear()
+
+
+async def find_user_by_token(token: str) -> dict | None:
+    """Look up an active user by token (Supabase only). None = unknown or disabled."""
+    sb = _supabase_headers()
+    if not sb or not token.strip():
+        return None
+    h = hash_token(token)
+    now = time.monotonic()
+    hit = _USER_CACHE.get(h)
+    if hit and hit[0] > now:
+        return hit[1]
+    base_url, headers = sb
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                f"{base_url}/rest/v1/{USERS_TABLE}",
+                headers=headers,
+                params={"select": "id,name,daily_limit,disabled", "token_hash": f"eq.{h}", "limit": "1"},
+            )
+    except Exception as exc:
+        raise StorageError(f"Supabase 연결 실패: {type(exc).__name__}: {exc}") from exc
+    if resp.status_code != 200:
+        raise StorageError(f"Supabase users HTTP {resp.status_code}: {resp.text[:200]}")
+    rows = resp.json()
+    user = rows[0] if rows and not rows[0].get("disabled") else None
+    _USER_CACHE[h] = (now + (_USER_CACHE_TTL if user else _USER_MISS_TTL), user)
+    return user
+
+
+# ---- daily usage (Gemini cost guard) ---------------------------------------
+_LOCAL_USAGE: dict[tuple[str, object], int] = {}
+
+
+def _kst_day() -> str:
+    return (datetime.now(timezone.utc) + timedelta(hours=9)).date().isoformat()
+
+
+async def bump_usage(user_id: int | None) -> dict:
+    """Count one ingest attempt; returns today's {user_count, total_count} (KST day).
+
+    Supabase: atomic increment via the pick3_bump_usage() SQL function.
+    Local SQLite mode: in-memory counter (single user, resets on restart).
+    """
+    sb = _supabase_headers()
+    if not sb or user_id is None:
+        day = _kst_day()
+        _LOCAL_USAGE[(day, user_id)] = _LOCAL_USAGE.get((day, user_id), 0) + 1
+        total = sum(v for (d, _), v in _LOCAL_USAGE.items() if d == day)
+        return {"user_count": _LOCAL_USAGE[(day, user_id)], "total_count": total}
+    base_url, headers = sb
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(
+                f"{base_url}/rest/v1/rpc/pick3_bump_usage", headers=headers, json={"p_user": user_id}
+            )
+    except Exception as exc:
+        raise StorageError(f"Supabase 연결 실패: {type(exc).__name__}: {exc}") from exc
+    if resp.status_code != 200:
+        raise StorageError(f"Supabase usage HTTP {resp.status_code}: {resp.text[:200]}")
+    data = resp.json()
+    return {"user_count": int(data.get("user_count", 0)), "total_count": int(data.get("total_count", 0))}
+
+
 async def _save_place_supabase(row: dict, base_url: str, headers: dict[str, str]) -> dict:
     """Upsert into Supabase; duplicates (same name + address) are ignored, never overwritten.
 
@@ -255,7 +344,7 @@ async def _save_place_supabase(row: dict, base_url: str, headers: dict[str, str]
             ins = await client.post(
                 endpoint,
                 headers={**headers, "Prefer": "return=representation,resolution=ignore-duplicates"},
-                params={"on_conflict": "name,address"},
+                params={"on_conflict": "user_id,name,address"},
                 json=row,
             )
             if ins.status_code not in (200, 201):
@@ -264,11 +353,9 @@ async def _save_place_supabase(row: dict, base_url: str, headers: dict[str, str]
             if isinstance(body, list) and body:
                 return {**body[0], "storage": "supabase", "duplicate": False}
             # Empty representation => conflict ignored => fetch the existing row.
-            dup = await client.get(
-                endpoint,
-                headers=headers,
-                params={"name": f"eq.{row['name']}", "address": f"eq.{row['address']}", "limit": "1"},
-            )
+            dup_params = {"name": f"eq.{row['name']}", "address": f"eq.{row['address']}", "limit": "1"}
+            dup_params["user_id"] = f"eq.{row['user_id']}" if row.get("user_id") is not None else "is.null"
+            dup = await client.get(endpoint, headers=headers, params=dup_params)
             if dup.status_code == 200 and dup.json():
                 return {**dup.json()[0], "storage": "supabase", "duplicate": True}
             return {**row, "storage": "supabase", "duplicate": True}
@@ -278,8 +365,11 @@ async def _save_place_supabase(row: dict, base_url: str, headers: dict[str, str]
         raise StorageError(f"Supabase 연결 실패: {type(exc).__name__}: {exc}") from exc
 
 
-async def save_place(place: dict) -> dict:
-    """Persist saved place to Supabase (if configured) or local SQLite."""
+async def save_place(place: dict, user_id: int | None = None) -> dict:
+    """Persist a saved place for one user to Supabase (if configured) or local SQLite.
+
+    SQLite is the single-user local dev store, so user_id only applies to Supabase.
+    """
     row = {
         "name": place["name"],
         "area": place.get("area", ""),
@@ -297,7 +387,7 @@ async def save_place(place: dict) -> dict:
 
     sb = _supabase_headers()
     if sb:
-        return await _save_place_supabase(row, *sb)
+        return await _save_place_supabase({**row, "user_id": user_id}, *sb)
 
     db_path = _get_db_path()
     with sqlite3.connect(db_path) as conn:
@@ -334,16 +424,18 @@ async def save_place(place: dict) -> dict:
         return {**row, "id": cur.lastrowid, "storage": "sqlite", "duplicate": False}
 
 
-async def load_all_saved_places() -> list[dict]:
+async def load_all_saved_places(user_id: int | None = None) -> list[dict]:
+    """One user's saved places (newest first). Supabase rows are always filtered by user."""
     sb = _supabase_headers()
     if sb:
         base_url, headers = sb
+        owner = f"eq.{user_id}" if user_id is not None else "is.null"
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 resp = await client.get(
                     f"{base_url}/rest/v1/{SUPABASE_TABLE}",
                     headers=headers,
-                    params={"order": "created_at.desc", "limit": "200"},
+                    params={"user_id": owner, "order": "created_at.desc", "limit": "200"},
                 )
         except Exception as exc:
             raise StorageError(f"Supabase 연결 실패: {type(exc).__name__}: {exc}") from exc
@@ -367,9 +459,10 @@ async def pick3_from_saved(
     area: str = "",
     lat: float | None = None,
     lng: float | None = None,
+    user_id: int | None = None,
 ) -> dict:
-    """Return top 3 saved places filtered by area or sorted by distance from user GPS."""
-    rows = await load_all_saved_places()
+    """Return top 3 of one user's saved places, filtered by area or sorted by GPS distance."""
+    rows = await load_all_saved_places(user_id)
     clean_area = area.strip()
 
     scored: list[tuple[int, float, dict]] = []

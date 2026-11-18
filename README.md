@@ -31,8 +31,20 @@ pytest tests/test_pick3_api.py -v
 뒷면 탭 → 단축어: 스크린샷 → JPEG → POST /api/ingest/screenshot
  → Gemini(PICK3_GEMINI_MODEL)가 상호·동네·메뉴 추출
  → 카카오 로컬로 같은 가게(음식점 FD6·카페 CE7)인지 확인, 주소·좌표 확정
- → Supabase 저장(상호+주소 중복 무시) → 결과 문구 표시
+ → Supabase에 사용자별로 저장(같은 사람의 상호+주소 중복 무시) → 결과 문구 표시
 ```
+
+### 사용자와 토큰
+
+저장 목록은 사람마다 따로입니다. 각자 받은 **개인 토큰**으로 구분합니다(서버에는 토큰의 SHA-256 해시만 저장).
+
+1. 처음 한 번: Supabase SQL Editor에서 `docs/SUPABASE_MIGRATION_002_users.sql` 실행 (`SUPABASE_SETUP.sql` 다음)
+2. 사용자 추가: `python scripts/pick3_users.py add 홍길동` → 토큰이 **한 번만** 표시됨. 본인에게 전달
+3. 그 밖의 관리: `list`, `rotate <id>`(토큰 분실·유출 시 재발급), `disable <id>`, `enable <id>`
+
+받은 사람은 토큰을 ① 단축어 헤더에 넣고 ② 웹앱 **📌 내 저장**을 처음 누를 때 붙여넣습니다(이 기기에만 보관). `https://…/?token=<토큰>` 링크로 열어도 저장됩니다.
+
+하루 한도: 사람당 `PICK3_DAILY_LIMIT_PER_USER`(기본 30건, 사용자별 `daily_limit`이 있으면 그 값), 전체 `PICK3_DAILY_LIMIT_TOTAL`(기본 300건). 넘으면 Gemini를 부르지 않고 "한도" 문구를 돌려줍니다.
 
 ### 서버 환경변수 (Render)
 
@@ -42,10 +54,11 @@ pytest tests/test_pick3_api.py -v
 | `GEMINI_API_KEY` | 화면 분석 |
 | `PICK3_GEMINI_MODEL` | 선택. 기본 `gemini-3.5-flash-lite`. 인식이 약하면 `gemini-3.8-flash` |
 | `KAKAO_REST_API_KEY` | 가게 확인·좌표 |
-| `PICK3_INGEST_TOKEN` | 업로드 인증 토큰. 단축어 헤더와 같은 값 |
+| `PICK3_DAILY_LIMIT_PER_USER`, `PICK3_DAILY_LIMIT_TOTAL` | 선택. 하루 분석 한도 (기본 30 / 300) |
+| `PICK3_INGEST_TOKEN` | Supabase 없이 로컬에서만 쓰는 공용 토큰. 운영(Supabase)에서는 쓰지 않음 |
 
 > Render 서비스는 Auto-Deploy가 꺼져 있습니다. push 후 **Manual Deploy → Deploy latest commit**. 환경변수만 바꿀 때는 "Save only" 후 배포.
-> 확인: `GET /api/health` → `storage_ok`, `gemini_key_configured`, `ingest_auth_configured`가 모두 `true`.
+> 확인: `GET /api/health` → `storage_ok`, `gemini_key_configured`가 `true`, `auth_mode`가 `per_user`.
 
 ### 단축어 만들기 (iOS 18+ 한국어 기준)
 
@@ -56,7 +69,7 @@ pytest tests/test_pick3_api.py -v
 3. **URL 콘텐츠 가져오기**
    - URL: `https://pick3-api.onrender.com/api/ingest/screenshot`
    - `>` 펼치기 → **메소드 `POST`** (GET이면 "Method Not Allowed")
-   - **헤더** → 새로운 헤더 추가: `X-Pick3-Token` = `<PICK3_INGEST_TOKEN 값>`
+   - **헤더** → 새로운 헤더 추가: `X-Pick3-Token` = `<내 개인 토큰>`
    - **본문 요청** → `형식`(양식) → **새로운 필드 추가 → 파일** → 키 `image`, 값은 파란 변수 **변환된 이미지**
      (키 칸에 변수를 넣지 않도록 주의. 헤더가 아니라 본문 필드입니다)
 4. **사전 값 가져오기** → `URL 콘텐츠`에서 `message`에 대한 값
@@ -76,8 +89,9 @@ pytest tests/test_pick3_api.py -v
 | 문구 | 의미 |
 |---|---|
 | ✅ 저장 완료: 상호 (동네) | 저장됨 |
-| 이미 저장된 곳입니다 | 같은 상호·주소가 이미 있음 |
+| 이미 저장된 곳입니다 | 내 목록에 같은 상호·주소가 이미 있음 |
+| 오늘 저장 한도(…건)를 넘었습니다 | 하루 한도 초과. 다음 날(한국 시간) 초기화 |
 | ⚠ …위치 확인 필요 | 저장했지만 카카오에서 같은 가게를 확정 못 함(좌표 없음). 지점·동네가 보이는 화면으로 다시 |
 | 음식점 이름을 찾지 못했습니다 | 화면에 상호가 없음 |
 | ❌ 저장 실패 / 화면 분석 실패 | 서버·외부 API 문제. 잠시 후 재시도 |
-| Invalid or missing X-Pick3-Token | 헤더 이름·토큰 오타 |
+| Invalid or missing X-Pick3-Token | 헤더 이름·토큰 오타, 등록 안 된 토큰, 사용 중지된 사용자 |

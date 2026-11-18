@@ -42,26 +42,32 @@ try:
     from .reels_script import build_reels_script
     from .saved_places import (
         StorageError,
+        bump_usage,
         extract_place_from_image,
+        find_user_by_token,
         gemini_model,
         load_all_saved_places,
         pick3_from_saved,
         resolve_place_with_kakao,
         save_place,
         storage_status,
+        supabase_configured,
     )
 except ImportError:
     from providers import ProviderType, SituationType, get_kakao_diag, get_recommendations
     from reels_script import build_reels_script
     from saved_places import (
         StorageError,
+        bump_usage,
         extract_place_from_image,
+        find_user_by_token,
         gemini_model,
         load_all_saved_places,
         pick3_from_saved,
         resolve_place_with_kakao,
         save_place,
         storage_status,
+        supabase_configured,
     )
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -133,7 +139,8 @@ async def icon() -> FileResponse:
 @app.get("/api/health")
 async def health() -> dict:
     return {"status": "ok", "service": "pick3", **get_kakao_diag(), **(await storage_status()),
-            "ingest_auth_configured": bool(_ingest_token()),
+            "auth_mode": _auth_mode(),
+            "ingest_auth_configured": _auth_mode() != "open",
             "gemini_key_configured": bool(os.getenv("GEMINI_API_KEY", "").strip()),
             "gemini_model": gemini_model()}
 
@@ -183,13 +190,43 @@ def _ingest_token() -> str:
     return os.getenv("PICK3_INGEST_TOKEN", "").strip()
 
 
-def _check_ingest_token(supplied: str | None) -> None:
-    """Require X-Pick3-Token when PICK3_INGEST_TOKEN is set (always set it on Render)."""
+def _auth_mode() -> str:
+    """per_user: Supabase pick3_users tokens. shared_token: local dev with one env token. open: local dev."""
+    if supabase_configured():
+        return "per_user"
+    return "shared_token" if _ingest_token() else "open"
+
+
+_AUTH_ERROR = "Invalid or missing X-Pick3-Token"
+
+
+async def _current_user(supplied: str | None) -> dict:
+    """Resolve X-Pick3-Token to a user.
+
+    With Supabase every request needs a registered per-user token (scripts/pick3_users.py).
+    Without Supabase (local single-user dev) PICK3_INGEST_TOKEN, if set, is the only token.
+    """
+    token = (supplied or "").strip()
+    if supabase_configured():
+        if not token:
+            raise HTTPException(status_code=401, detail=_AUTH_ERROR)
+        try:
+            user = await find_user_by_token(token)
+        except StorageError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        if not user:
+            raise HTTPException(status_code=401, detail=_AUTH_ERROR)
+        return user
     expected = _ingest_token()
-    if not expected:
-        return  # local dev without a token: open
-    if not supplied or not secrets.compare_digest(supplied.strip(), expected):
-        raise HTTPException(status_code=401, detail="Invalid or missing X-Pick3-Token")
+    if expected and not (token and secrets.compare_digest(token, expected)):
+        raise HTTPException(status_code=401, detail=_AUTH_ERROR)
+    return {"id": None, "name": "local", "daily_limit": None}
+
+
+def _daily_limits(user: dict) -> tuple[int, int]:
+    per_user = user.get("daily_limit") or int(os.getenv("PICK3_DAILY_LIMIT_PER_USER", "30"))
+    total = int(os.getenv("PICK3_DAILY_LIMIT_TOTAL", "300"))
+    return int(per_user), total
 
 
 @app.post("/api/ingest/screenshot")
@@ -197,12 +234,21 @@ async def ingest_screenshot(
     image: UploadFile = File(...),
     x_pick3_token: Optional[str] = Header(default=None),
 ) -> dict:
-    _check_ingest_token(x_pick3_token)
+    user = await _current_user(x_pick3_token)
     raw = await image.read()
     if not raw:
         raise HTTPException(status_code=400, detail="Empty image upload")
     if not os.getenv("GEMINI_API_KEY", "").strip():
         return {"status": "error", "message": "❌ 서버에 GEMINI_API_KEY가 설정되지 않아 화면을 분석할 수 없습니다."}
+    try:
+        usage = await bump_usage(user["id"])
+    except StorageError as exc:
+        return {"status": "error", "message": "❌ 저장소 연결 문제입니다. 잠시 후 다시 시도해 주세요.", "detail": str(exc)}
+    per_user_limit, total_limit = _daily_limits(user)
+    if usage["user_count"] > per_user_limit:
+        return {"status": "limited", "message": f"오늘 저장 한도({per_user_limit}건)를 넘었습니다. 내일 다시 시도해 주세요."}
+    if usage["total_count"] > total_limit:
+        return {"status": "limited", "message": "오늘 서비스 전체 분석 한도에 도달했습니다. 내일 다시 시도해 주세요."}
     try:
         extracted = await extract_place_from_image(raw, mime_type=image.content_type or "image/jpeg")
     except Exception as exc:
@@ -218,7 +264,7 @@ async def ingest_screenshot(
         }
     resolved = await resolve_place_with_kakao(extracted)
     try:
-        saved = await save_place(resolved)
+        saved = await save_place(resolved, user_id=user["id"])
     except StorageError as exc:
         return {
             "status": "error",
@@ -238,13 +284,21 @@ async def ingest_screenshot(
     }
 
 
+@app.get("/api/me")
+async def me(x_pick3_token: Optional[str] = Header(default=None)) -> dict:
+    """Lets the web app check a pasted token and greet the user."""
+    user = await _current_user(x_pick3_token)
+    return {"name": user["name"], "auth_mode": _auth_mode()}
+
+
 @app.get("/api/saved")
-async def list_saved() -> dict:
+async def list_saved(x_pick3_token: Optional[str] = Header(default=None)) -> dict:
+    user = await _current_user(x_pick3_token)
     try:
-        rows = await load_all_saved_places()
+        rows = await load_all_saved_places(user["id"])
     except StorageError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return {"count": len(rows), "items": rows}
+    return {"user": user["name"], "count": len(rows), "items": rows}
 
 
 class SavedPick3Request(BaseModel):
@@ -254,8 +308,12 @@ class SavedPick3Request(BaseModel):
 
 
 @app.post("/api/saved/pick3")
-async def saved_pick3(payload: SavedPick3Request) -> dict:
+async def saved_pick3(
+    payload: SavedPick3Request,
+    x_pick3_token: Optional[str] = Header(default=None),
+) -> dict:
+    user = await _current_user(x_pick3_token)
     try:
-        return await pick3_from_saved(area=payload.area, lat=payload.lat, lng=payload.lng)
+        return await pick3_from_saved(area=payload.area, lat=payload.lat, lng=payload.lng, user_id=user["id"])
     except StorageError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
