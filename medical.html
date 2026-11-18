@@ -33,6 +33,9 @@
     table { width: 100%; border-collapse: collapse; font-size: 14px; }
     th, td { padding: 10px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
     th { background: var(--surface-2); color: var(--muted); font-weight: 600; font-size: 12px; position: sticky; top: 0; }
+    th[data-sort] { cursor: pointer; user-select: none; -webkit-user-select: none; }
+    th.on { color: var(--text); }
+    th .arrow { margin-left: 4px; font-size: 10px; color: var(--accent); }
     td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
     tr:last-child td { border-bottom: 0; }
     tbody tr { cursor: pointer; }
@@ -81,7 +84,13 @@
   <div class="totals" id="totals"></div>
   <div class="wrap">
     <table>
-      <thead><tr><th>환자</th><th>날짜</th><th>기관</th><th>구분</th><th class="num">금액</th></tr></thead>
+      <thead><tr>
+        <th data-sort="patient">환자<span class="arrow"></span></th>
+        <th data-sort="visit_date">날짜<span class="arrow"></span></th>
+        <th data-sort="provider">기관<span class="arrow"></span></th>
+        <th data-sort="kind">구분<span class="arrow"></span></th>
+        <th data-sort="amount" class="num">금액<span class="arrow"></span></th>
+      </tr></thead>
       <tbody id="rows"></tbody>
     </table>
   </div>
@@ -120,10 +129,47 @@
     const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
     const won = (n) => `${Number(n).toLocaleString("ko-KR")}원`;
 
+    // Sort state: column key + direction. Ties fall back to newest date first.
+    const SORT_DEFAULT_DIR = { visit_date: -1, amount: -1, patient: 1, provider: 1, kind: 1 };
+    let sortKey = "visit_date", sortDir = -1;
+    try {
+      const saved = JSON.parse(localStorage.getItem("pick3_medical_sort") || "null");
+      if (saved && saved.key in SORT_DEFAULT_DIR) { sortKey = saved.key; sortDir = saved.dir === 1 ? 1 : -1; }
+    } catch {}
+
+    function compareRows(a, b) {
+      const va = a[sortKey], vb = b[sortKey];
+      const primary = sortKey === "amount"
+        ? (Number(va) - Number(vb))
+        : String(va || "").localeCompare(String(vb || ""), "ko");
+      return primary * sortDir || b.visit_date.localeCompare(a.visit_date) || (b.id - a.id);
+    }
+
     function filtered() {
       const p = patientSel.value, y = yearSel.value, k = kindSel.value;
-      return all.filter((r) => (!p || r.patient === p) && (!y || r.visit_date.startsWith(y)) && (!k || r.kind === k));
+      return all
+        .filter((r) => (!p || r.patient === p) && (!y || r.visit_date.startsWith(y)) && (!k || r.kind === k))
+        .sort(compareRows);
     }
+
+    function renderSortHeads() {
+      for (const th of document.querySelectorAll("th[data-sort]")) {
+        const on = th.dataset.sort === sortKey;
+        th.classList.toggle("on", on);
+        th.querySelector(".arrow").textContent = on ? (sortDir === 1 ? "▲" : "▼") : "";
+        th.setAttribute("aria-sort", on ? (sortDir === 1 ? "ascending" : "descending") : "none");
+      }
+    }
+
+    document.querySelector("thead").addEventListener("click", (e) => {
+      const th = e.target.closest("th[data-sort]");
+      if (!th) return;
+      const key = th.dataset.sort;
+      if (key === sortKey) sortDir = -sortDir;
+      else { sortKey = key; sortDir = SORT_DEFAULT_DIR[key]; }
+      try { localStorage.setItem("pick3_medical_sort", JSON.stringify({ key: sortKey, dir: sortDir })); } catch {}
+      render();
+    });
 
     function fillSelect(sel, values, label) {
       const cur = sel.value;
@@ -133,6 +179,7 @@
 
     function render() {
       const rows = filtered();
+      renderSortHeads();
       document.getElementById("rows").innerHTML = rows.map((r) => `
         <tr data-id="${r.id}"><td>${esc(r.patient || "-")}</td><td>${esc(r.visit_date)}</td><td>${esc(r.provider)}</td>
         <td>${esc(r.kind)}</td><td class="num">${won(r.amount)}</td></tr>`).join("");
@@ -255,7 +302,6 @@
           const row = await callApi("PATCH", changes);
           Object.assign(editing, row);
         }
-        all.sort((a, b) => (b.visit_date.localeCompare(a.visit_date)) || (b.id - a.id));
         refreshFilters();
         render();
         dlg.close();
