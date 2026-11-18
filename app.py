@@ -31,7 +31,7 @@ _load_local_env(Path(__file__).resolve().parent / ".env")
 
 import secrets
 
-from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -340,8 +340,14 @@ async def saved_pick3(
 async def ingest_medical(
     image: UploadFile = File(...),
     x_pick3_token: Optional[str] = Header(default=None),
+    patient: Optional[str] = Form(default=None),
 ) -> dict:
-    """Screenshot or PDF of hospital/pharmacy payments -> rows saved for the token's user."""
+    """Screenshot or PDF of hospital/pharmacy payments -> rows saved for the token's user.
+
+    `patient` (form field, optional) names the customer/patient explicitly - e.g. an insurance
+    planner saving a customer's records under their own token. It wins over the name on screen.
+    """
+    chosen = (patient or "").strip()[:40]
     user = await _current_user(x_pick3_token)
     raw = await image.read()
     if not raw:
@@ -367,9 +373,11 @@ async def ingest_medical(
             "message": "❌ 분석 실패 (Gemini). 잠시 후 다시 시도해 주세요.",
             "detail": f"{type(exc).__name__}: {str(exc)[:200]}",
         }
-    patient, rows, skipped = medical.normalize_records(extracted)
+    on_screen, rows, skipped = medical.normalize_records(extracted)
+    patient = chosen or on_screen
     if not rows:
         return {"status": "not_found", "message": "결제 내역(기관·금액·날짜)을 찾지 못했습니다. 내역이 보이는 화면으로 다시 시도해 주세요."}
+    rows = [{**r, "patient": patient} for r in rows]
     assumed = False
     if not patient:
         # Nameless screen (e.g. a receipt): default to the patient this user saved most recently.
@@ -393,13 +401,16 @@ async def ingest_medical(
     if len(rows) > 15:
         lines.append(f"… 외 {len(rows) - 15}건")
     lines.append(f"화면 합계 {total:,}원")
+    if chosen and on_screen and on_screen.replace(" ", "") != chosen.replace(" ", ""):
+        lines.append(f"⚠ 화면의 이름은 '{on_screen}'인데 입력한 '{chosen}'(으)로 저장했습니다. 다르면 의료비 화면에서 바꾸세요.")
     if assumed:
-        lines.append(f"⚠ 화면에 이름이 없어 최근 환자 '{patient}'(으)로 저장했습니다. 다르면 의료비 화면에서 행을 눌러 환자를 바꾸세요(같이 저장된 건 한 번에).")
+        lines.append(f"⚠ 이름이 없어 최근 고객·환자 '{patient}'(으)로 저장했습니다. 다르면 의료비 화면에서 행을 눌러 바꾸세요(같이 저장된 건 한 번에).")
     elif not patient:
-        lines.append("⚠ 환자 이름을 찾지 못했습니다. 의료비 화면에서 행을 눌러 환자를 입력하세요.")
+        lines.append("⚠ 고객·환자 이름을 찾지 못했습니다. 의료비 화면에서 행을 눌러 이름을 입력하세요.")
     if skipped:
         lines.append(f"⚠ 잘려서 읽지 못한 {skipped}건은 빠졌습니다. 스크롤해서 한 장 더 보내 주세요.")
     return {"status": "saved", "message": "\n".join(lines), "patient": patient, "patient_assumed": assumed,
+            "patient_on_screen": on_screen,
             "inserted": inserted, "duplicates": duplicates, "skipped": skipped, "records": rows}
 
 
@@ -468,6 +479,23 @@ async def change_medical_patient(
     except StorageError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {"updated": len(rows), "items": rows}
+
+
+@app.delete("/api/medical")
+async def delete_medical_patient(
+    patient: str,
+    x_pick3_token: Optional[str] = Header(default=None),
+) -> dict:
+    """Delete ALL of one customer's/patient's records for this user (e.g. on a customer's request)."""
+    user = await _current_user(x_pick3_token)
+    name = patient.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="삭제할 고객·환자 이름을 지정해 주세요.")
+    try:
+        count = await medical.delete_patient_records(user["id"], name)
+    except StorageError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"patient": name, "deleted": count}
 
 
 @app.delete("/api/medical/{record_id}")

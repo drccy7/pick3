@@ -70,22 +70,23 @@
     <h1>🧾 의료비 기록</h1>
     <a class="back" href="./">← 홈</a>
   </div>
-  <p class="sub" id="who">병원·약국 결제 내역을 환자·연도별로 정리합니다.</p>
+  <p class="sub" id="who">병원·약국 결제 내역을 고객·환자, 연도별로 정리합니다.</p>
 
   <div class="bar">
-    <select id="patientSel" aria-label="환자"><option value="">전체 환자</option></select>
+    <select id="patientSel" aria-label="고객·환자"><option value="">전체 고객·환자</option></select>
     <select id="yearSel" aria-label="연도"><option value="">전체 연도</option></select>
     <select id="kindSel" aria-label="구분">
       <option value="">전체 구분</option><option>병원</option><option>약국</option><option>안경</option><option>기타</option>
     </select>
     <button class="primary" id="csvBtn" type="button">엑셀(CSV) 받기</button>
+    <button class="danger" id="delPatientBtn" type="button" hidden>이 고객·환자 기록 전체 삭제</button>
   </div>
 
   <div class="totals" id="totals"></div>
   <div class="wrap">
     <table>
       <thead><tr>
-        <th data-sort="patient">환자<span class="arrow"></span></th>
+        <th data-sort="patient">고객·환자<span class="arrow"></span></th>
         <th data-sort="visit_date">날짜<span class="arrow"></span></th>
         <th data-sort="provider">기관<span class="arrow"></span></th>
         <th data-sort="kind">구분<span class="arrow"></span></th>
@@ -100,10 +101,10 @@
   <dialog id="editDlg">
     <form id="editForm" method="dialog">
       <h2>기록 수정</h2>
-      <label>환자<input id="fPatient" list="patientList" autocomplete="off" /></label>
+      <label>고객·환자<input id="fPatient" list="patientList" autocomplete="off" /></label>
       <datalist id="patientList"></datalist>
       <label class="chk" id="batchWrap"><input type="checkbox" id="fBatch" checked />
-        같이 저장된 <b id="batchN"></b>건 모두 이 환자로 바꾸기</label>
+        같이 저장된 <b id="batchN"></b>건 모두 이 이름으로 바꾸기</label>
       <label>날짜<input id="fDate" type="date" required /></label>
       <label>기관<input id="fProvider" required autocomplete="off" /></label>
       <label>구분
@@ -213,7 +214,7 @@
 
     function downloadCsv() {
       const rows = filtered();
-      const head = ["환자", "연도", "날짜", "기관", "구분", "금액"];
+      const head = ["고객·환자", "연도", "날짜", "기관", "구분", "금액"];
       const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
       const lines = [head.map(q).join(",")].concat(rows.map((r) =>
         [r.patient, r.visit_date.slice(0, 4), r.visit_date, r.provider, r.kind, r.amount].map(q).join(",")));
@@ -230,7 +231,7 @@
     let editing = null;
 
     function refreshFilters() {
-      fillSelect(patientSel, [...new Set(all.map((r) => r.patient || ""))].filter(Boolean).sort(), "전체 환자");
+      fillSelect(patientSel, [...new Set(all.map((r) => r.patient || ""))].filter(Boolean).sort(), "전체 고객·환자");
       fillSelect(yearSel, [...new Set(all.map((r) => r.visit_date.slice(0, 4)))].sort().reverse(), "전체 연도");
       document.getElementById("patientList").innerHTML =
         [...new Set(all.map((r) => r.patient).filter(Boolean))].map((p) => `<option value="${esc(p)}">`).join("");
@@ -319,6 +320,31 @@
       } catch (err) { dlgErr.textContent = `삭제하지 못했습니다: ${err.message}`; }
     });
     document.getElementById("cancelBtn").addEventListener("click", () => dlg.close());
+    function syncDelPatientBtn() {
+      document.getElementById("delPatientBtn").hidden = !patientSel.value;
+    }
+
+    document.getElementById("delPatientBtn").addEventListener("click", async () => {
+      const name = patientSel.value;
+      if (!name) return;
+      const n = all.filter((r) => r.patient === name).length;
+      const typed = prompt(`'${name}'의 기록 ${n}건을 모두 삭제합니다. 되돌릴 수 없습니다.
+확인하려면 이름을 그대로 입력하세요:`, "");
+      if ((typed || "").trim() !== name) { if (typed !== null) alert("이름이 달라 삭제하지 않았습니다."); return; }
+      const res = await fetch(`${API}/api/medical?patient=${encodeURIComponent(name)}`, {
+        method: "DELETE", headers: { "X-Pick3-Token": token() },
+      });
+      if (!res.ok) { alert(`삭제하지 못했습니다 (HTTP ${res.status}).`); return; }
+      const body = await res.json();
+      all = all.filter((r) => r.patient !== name);
+      patientSel.value = "";
+      refreshFilters();
+      syncDelPatientBtn();
+      render();
+      alert(`'${name}' 기록 ${body.deleted}건을 삭제했습니다.`);
+    });
+
+    patientSel.addEventListener("change", syncDelPatientBtn);
     for (const sel of [patientSel, yearSel, kindSel]) sel.addEventListener("change", render);
     document.getElementById("csvBtn").addEventListener("click", downloadCsv);
     load();

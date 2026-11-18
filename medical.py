@@ -240,6 +240,24 @@ async def set_patient(record_ids: list[int], user_id: int | None, patient: str) 
     return resp.json()
 
 
+async def delete_patient_records(user_id: int | None, patient: str) -> int:
+    """Delete every row of one patient/customer for this user. Returns how many were removed."""
+    endpoint, headers = _sb()
+    owner = f"eq.{user_id}" if user_id is not None else "is.null"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.delete(
+                endpoint,
+                headers={**headers, "Prefer": "return=representation"},
+                params={"user_id": owner, "patient": f"eq.{patient}", "select": "id"},
+            )
+    except Exception as exc:
+        raise StorageError(f"Supabase 연결 실패: {type(exc).__name__}: {exc}") from exc
+    if resp.status_code != 200:
+        raise StorageError(f"Supabase delete HTTP {resp.status_code}: {resp.text[:200]}")
+    return len(resp.json() or [])
+
+
 class DuplicateRecordError(ValueError):
     """The edit would make the row identical to another (same patient/provider/date/amount)."""
 

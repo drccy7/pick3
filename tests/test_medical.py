@@ -203,7 +203,7 @@ def test_nameless_screen_defaults_to_most_recent_patient(monkeypatch: pytest.Mon
     seen = _fake(monkeypatch, NAMELESS, rows=[{"patient": "정지수"}])
     res = client.post("/api/ingest/medical", files={"image": ("s.png", PNG, "image/png")}, headers=AUTH).json()
     assert res["status"] == "saved" and res["patient"] == "정지수" and res["patient_assumed"] is True
-    assert "최근 환자 '정지수'" in res["message"]
+    assert "최근 고객·환자 '정지수'" in res["message"]
     assert seen["posts"][0][1]["json"][0]["patient"] == "정지수"
     recent_q = seen["gets"][0][1]["params"]
     assert recent_q["user_id"] == "eq.7" and recent_q["patient"] == "neq." and recent_q["limit"] == "1"
@@ -213,7 +213,7 @@ def test_nameless_screen_without_history_keeps_blank_patient(monkeypatch: pytest
     seen = _fake(monkeypatch, NAMELESS, rows=[])
     res = client.post("/api/ingest/medical", files={"image": ("s.png", PNG, "image/png")}, headers=AUTH).json()
     assert res["patient"] == "" and res["patient_assumed"] is False
-    assert "환자 이름을 찾지 못했습니다" in res["message"]
+    assert "이름을 찾지 못했습니다" in res["message"]
     assert seen["posts"][0][1]["json"][0]["patient"] == ""
 
 
@@ -226,3 +226,33 @@ def test_bulk_patient_change(monkeypatch: pytest.MonkeyPatch) -> None:
     assert kw["json"] == {"patient": "정지수"}
     assert client.post("/api/medical/patient", json={"ids": [], "patient": "x"}, headers=AUTH).status_code == 422
     assert client.post("/api/medical/patient", json={"ids": [1], "patient": "x"}).status_code == 401
+
+
+def test_customer_name_form_field_overrides_screen_and_warns(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Insurance planner flow: own token, customer named explicitly.
+    seen = _fake(monkeypatch, SCREEN)
+    res = client.post("/api/ingest/medical", files={"image": ("s.png", PNG, "image/png")},
+                      data={"patient": " 김고객 "}, headers=AUTH).json()
+    assert res["status"] == "saved" and res["patient"] == "김고객" and res["patient_assumed"] is False
+    assert res["patient_on_screen"] == "정치연"
+    assert "화면의 이름은 '정치연'" in res["message"]
+    assert {r["patient"] for r in seen["posts"][0][1]["json"]} == {"김고객"}
+    assert all(r["user_id"] == 7 for r in seen["posts"][0][1]["json"])
+    assert seen["gets"] == []  # explicit name: no 'recent patient' lookup
+
+
+def test_customer_name_on_nameless_screen_has_no_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake(monkeypatch, NAMELESS, rows=[{"patient": "다른고객"}])
+    res = client.post("/api/ingest/medical", files={"image": ("s.png", PNG, "image/png")},
+                      data={"patient": "김고객"}, headers=AUTH).json()
+    assert res["patient"] == "김고객" and "⚠" not in res["message"]
+
+
+def test_delete_all_records_of_one_customer(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _fake(monkeypatch, SCREEN)
+    res = client.delete("/api/medical", params={"patient": "김고객"}, headers=AUTH)
+    assert res.status_code == 200 and res.json() == {"patient": "김고객", "deleted": 1}
+    assert seen["deletes"][0][1]["params"]["user_id"] == "eq.7"
+    assert seen["deletes"][0][1]["params"]["patient"] == "eq.김고객"
+    assert client.delete("/api/medical", params={"patient": " "}, headers=AUTH).status_code == 422
+    assert client.delete("/api/medical", params={"patient": "김고객"}).status_code == 401
