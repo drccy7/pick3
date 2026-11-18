@@ -12,6 +12,23 @@ if sys.stdout is not None and hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
+import os
+
+
+def _load_local_env(path: Path) -> None:
+    """Load KEY=VALUE lines from a local .env without overriding real env vars."""
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+_load_local_env(Path(__file__).resolve().parent / ".env")
+
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -22,21 +39,25 @@ try:
     from .providers import ProviderType, SituationType, get_kakao_diag, get_recommendations
     from .reels_script import build_reels_script
     from .saved_places import (
+        StorageError,
         extract_place_from_image,
         load_all_saved_places,
         pick3_from_saved,
         resolve_place_with_kakao,
         save_place,
+        storage_status,
     )
 except ImportError:
     from providers import ProviderType, SituationType, get_kakao_diag, get_recommendations
     from reels_script import build_reels_script
     from saved_places import (
+        StorageError,
         extract_place_from_image,
         load_all_saved_places,
         pick3_from_saved,
         resolve_place_with_kakao,
         save_place,
+        storage_status,
     )
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -107,7 +128,7 @@ async def icon() -> FileResponse:
 
 @app.get("/api/health")
 async def health() -> dict:
-    return {"status": "ok", "service": "pick3", **get_kakao_diag()}
+    return {"status": "ok", "service": "pick3", **get_kakao_diag(), **(await storage_status())}
 
 
 @app.get("/api/presets")
@@ -163,7 +184,14 @@ async def ingest_screenshot(image: UploadFile = File(...)) -> dict:
             "message": "화면에서 음식점 이름을 찾지 못했습니다. 상호가 보이는 화면에서 다시 시도해 주세요.",
         }
     resolved = await resolve_place_with_kakao(extracted)
-    saved = await save_place(resolved)
+    try:
+        saved = await save_place(resolved)
+    except StorageError as exc:
+        return {
+            "status": "error",
+            "message": f"❌ 저장 실패: {resolved['name']} - 저장소 연결 문제입니다. 잠시 후 다시 시도해 주세요.",
+            "detail": str(exc),
+        }
     area_text = saved.get("area") or saved.get("address") or ""
     prefix = "이미 저장된 곳입니다" if saved.get("duplicate") else "✅ 저장 완료"
     return {
@@ -175,7 +203,10 @@ async def ingest_screenshot(image: UploadFile = File(...)) -> dict:
 
 @app.get("/api/saved")
 async def list_saved() -> dict:
-    rows = await load_all_saved_places()
+    try:
+        rows = await load_all_saved_places()
+    except StorageError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {"count": len(rows), "items": rows}
 
 
@@ -187,4 +218,7 @@ class SavedPick3Request(BaseModel):
 
 @app.post("/api/saved/pick3")
 async def saved_pick3(payload: SavedPick3Request) -> dict:
-    return await pick3_from_saved(area=payload.area, lat=payload.lat, lng=payload.lng)
+    try:
+        return await pick3_from_saved(area=payload.area, lat=payload.lat, lng=payload.lng)
+    except StorageError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc

@@ -14,3 +14,11 @@ create table if not exists public.pick3_saved_places (
   naver_url text not null default '',
   created_at timestamptz not null default now()
 );
+
+-- Duplicate guard used by the API upsert (on_conflict=name,address)
+create unique index if not exists pick3_saved_places_name_addr_uq
+  on public.pick3_saved_places (name, address);
+
+-- RLS on with no policies: publishable/anon keys get nothing; only the server's
+-- secret key (which bypasses RLS) can read/write. Safe to share a project with other apps.
+alter table public.pick3_saved_places enable row level security;

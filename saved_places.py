@@ -143,17 +143,82 @@ async def resolve_place_with_kakao(extracted: dict) -> dict:
     return resolved
 
 
+class StorageError(RuntimeError):
+    """Raised when the configured persistent store (Supabase) cannot be used."""
+
+
+SUPABASE_TABLE = "pick3_saved_places"
+
+
 def _supabase_headers() -> tuple[str, dict[str, str]] | None:
+    """Return (base_url, headers) when Supabase is configured, else None.
+
+    New-style keys (sb_secret_/sb_publishable_) are not JWTs, so they go only in the
+    `apikey` header. Legacy JWT keys (eyJ...) are also sent as a Bearer token.
+    """
     url = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
     key = os.getenv("SUPABASE_KEY", "").strip()
     if not (url and key):
         return None
-    return url, {
-        "apikey": key,
-        "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json",
-        "Prefer": "return=representation",
-    }
+    headers = {"apikey": key, "Content-Type": "application/json"}
+    if key.startswith("eyJ"):
+        headers["Authorization"] = f"Bearer {key}"
+    return url, headers
+
+
+async def storage_status() -> dict:
+    """Report which store is active and whether it is reachable (for /api/health)."""
+    sb = _supabase_headers()
+    if not sb:
+        return {"storage": "sqlite", "storage_ok": True, "storage_note": "SUPABASE_URL/KEY 미설정 - 로컬 SQLite 사용"}
+    base_url, headers = sb
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                f"{base_url}/rest/v1/{SUPABASE_TABLE}",
+                headers=headers,
+                params={"select": "id", "limit": "1"},
+            )
+        ok = resp.status_code == 200
+        note = "" if ok else f"HTTP {resp.status_code}: {resp.text[:200]}"
+    except Exception as exc:  # network / DNS / timeout
+        ok, note = False, f"{type(exc).__name__}: {exc}"
+    return {"storage": "supabase", "storage_ok": ok, "storage_note": note}
+
+
+async def _save_place_supabase(row: dict, base_url: str, headers: dict[str, str]) -> dict:
+    """Upsert into Supabase; duplicates (same name + address) are ignored, never overwritten.
+
+    No silent SQLite fallback: on a server host (Render free) local disk is ephemeral,
+    so a fallback would report "saved" and then lose the data.
+    """
+    endpoint = f"{base_url}/rest/v1/{SUPABASE_TABLE}"
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            ins = await client.post(
+                endpoint,
+                headers={**headers, "Prefer": "return=representation,resolution=ignore-duplicates"},
+                params={"on_conflict": "name,address"},
+                json=row,
+            )
+            if ins.status_code not in (200, 201):
+                raise StorageError(f"Supabase insert HTTP {ins.status_code}: {ins.text[:200]}")
+            body = ins.json()
+            if isinstance(body, list) and body:
+                return {**body[0], "storage": "supabase", "duplicate": False}
+            # Empty representation => conflict ignored => fetch the existing row.
+            dup = await client.get(
+                endpoint,
+                headers=headers,
+                params={"name": f"eq.{row['name']}", "address": f"eq.{row['address']}", "limit": "1"},
+            )
+            if dup.status_code == 200 and dup.json():
+                return {**dup.json()[0], "storage": "supabase", "duplicate": True}
+            return {**row, "storage": "supabase", "duplicate": True}
+    except StorageError:
+        raise
+    except Exception as exc:
+        raise StorageError(f"Supabase 연결 실패: {type(exc).__name__}: {exc}") from exc
 
 
 async def save_place(place: dict) -> dict:
@@ -175,27 +240,7 @@ async def save_place(place: dict) -> dict:
 
     sb = _supabase_headers()
     if sb:
-        base_url, headers = sb
-        try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                # Avoid duplicate insert by name + address
-                check = await client.get(
-                    f"{base_url}/rest/v1/pick3_saved_places",
-                    headers=headers,
-                    params={"name": f"eq.{row['name']}", "limit": "1"},
-                )
-                if check.status_code == 200 and check.json():
-                    return {**check.json()[0], "storage": "supabase", "duplicate": True}
-                ins = await client.post(
-                    f"{base_url}/rest/v1/pick3_saved_places",
-                    headers=headers,
-                    json=row,
-                )
-                if ins.status_code in (200, 201):
-                    saved = ins.json()[0] if isinstance(ins.json(), list) else row
-                    return {**saved, "storage": "supabase", "duplicate": False}
-        except Exception:
-            pass
+        return await _save_place_supabase(row, *sb)
 
     db_path = _get_db_path()
     with sqlite3.connect(db_path) as conn:
@@ -239,14 +284,15 @@ async def load_all_saved_places() -> list[dict]:
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 resp = await client.get(
-                    f"{base_url}/rest/v1/pick3_saved_places",
+                    f"{base_url}/rest/v1/{SUPABASE_TABLE}",
                     headers=headers,
                     params={"order": "created_at.desc", "limit": "200"},
                 )
-                if resp.status_code == 200:
-                    return resp.json()
-        except Exception:
-            pass
+        except Exception as exc:
+            raise StorageError(f"Supabase 연결 실패: {type(exc).__name__}: {exc}") from exc
+        if resp.status_code != 200:
+            raise StorageError(f"Supabase select HTTP {resp.status_code}: {resp.text[:200]}")
+        return resp.json()
 
     db_path = _get_db_path()
     if not db_path.exists():

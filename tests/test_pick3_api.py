@@ -718,3 +718,105 @@ def test_ingest_screenshot_and_recall_saved_pick3(
     assert recall_body["data_source"] == "saved_places"
     assert recall_body["top_pick"]["name"] == "몽탄 성수직영점"
     assert "도보" in recall_body["top_pick"]["distance_text"]
+
+
+class _SbResp:
+    def __init__(self, status_code: int, payload) -> None:
+        self.status_code = status_code
+        self._payload = payload
+        self.text = str(payload)
+
+    def json(self):
+        return self._payload
+
+
+def _patch_ingest_upstreams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, sb_post, sb_get, calls: list) -> None:
+    """Fake Gemini + Kakao + Supabase. Kakao key unset so only Gemini/Supabase are hit."""
+    import httpx
+
+    monkeypatch.setenv("PICK3_SQLITE_PATH", str(tmp_path / "must_not_be_used.db"))
+    monkeypatch.setenv("GEMINI_API_KEY", "fake_gemini")
+    monkeypatch.delenv("KAKAO_REST_API_KEY", raising=False)
+    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co/")
+    monkeypatch.setenv("SUPABASE_KEY", "sb_secret_fake")
+
+    gemini = _SbResp(200, {"candidates": [{"content": {"parts": [{"text": '{"name": "몽탄", "area": "성수"}'}]}}]})
+    gemini.raise_for_status = lambda: None
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            pass
+
+        async def post(self, url, **kwargs):
+            if "generativelanguage" in url:
+                return gemini
+            calls.append(("post", url, kwargs))
+            return sb_post()
+
+        async def get(self, url, **kwargs):
+            calls.append(("get", url, kwargs))
+            return sb_get()
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+
+def test_ingest_supabase_upsert_uses_secret_key_header(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list = []
+    _patch_ingest_upstreams(
+        monkeypatch, tmp_path,
+        sb_post=lambda: _SbResp(201, [{"id": 7, "name": "몽탄", "area": "성수", "address": "성수"}]),
+        sb_get=lambda: _SbResp(200, []),
+        calls=calls,
+    )
+    res = client.post("/api/ingest/screenshot", files={"image": ("a.jpg", b"x", "image/jpeg")}).json()
+    assert res["status"] == "saved"
+    assert res["place"]["storage"] == "supabase" and res["place"]["duplicate"] is False
+    method, url, kwargs = calls[0]
+    assert url == "https://example.supabase.co/rest/v1/pick3_saved_places"
+    assert kwargs["params"] == {"on_conflict": "name,address"}
+    assert "resolution=ignore-duplicates" in kwargs["headers"]["Prefer"]
+    assert kwargs["headers"]["apikey"] == "sb_secret_fake"
+    assert "Authorization" not in kwargs["headers"]  # sb_secret_ keys are not JWTs
+    assert not (tmp_path / "must_not_be_used.db").exists()
+
+
+def test_ingest_supabase_duplicate_returns_existing_row(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list = []
+    _patch_ingest_upstreams(
+        monkeypatch, tmp_path,
+        sb_post=lambda: _SbResp(201, []),  # conflict ignored
+        sb_get=lambda: _SbResp(200, [{"id": 3, "name": "몽탄", "area": "성수", "address": "성수"}]),
+        calls=calls,
+    )
+    res = client.post("/api/ingest/screenshot", files={"image": ("a.jpg", b"x", "image/jpeg")}).json()
+    assert res["status"] == "saved"
+    assert res["message"].startswith("이미 저장된 곳입니다")
+    assert res["place"]["id"] == 3
+    assert calls[1][2]["params"]["address"] == "eq.성수"
+
+
+def test_ingest_supabase_failure_reports_error_without_sqlite_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list = []
+    _patch_ingest_upstreams(
+        monkeypatch, tmp_path,
+        sb_post=lambda: _SbResp(401, {"message": "Invalid API key"}),
+        sb_get=lambda: _SbResp(401, {"message": "Invalid API key"}),
+        calls=calls,
+    )
+    res = client.post("/api/ingest/screenshot", files={"image": ("a.jpg", b"x", "image/jpeg")}).json()
+    assert res["status"] == "error"
+    assert "저장 실패" in res["message"] and "401" in res["detail"]
+    assert not (tmp_path / "must_not_be_used.db").exists()
+
+    assert client.get("/api/saved").status_code == 503
+    assert client.post("/api/saved/pick3", json={"area": "성수"}).status_code == 503
+    health = client.get("/api/health").json()
+    assert health["storage"] == "supabase" and health["storage_ok"] is False
