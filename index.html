@@ -583,6 +583,9 @@
         localStorage.setItem("pick3_api_base", cleaned);
         return cleaned;
       }
+      if (location.pathname.startsWith("/pick3") && !location.hostname.endsWith("github.io")) {
+        return "/pick3";
+      }
       if (DEFAULT_API_BASE) return DEFAULT_API_BASE.replace(/\/+$/, "");
       return localStorage.getItem("pick3_api_base") || "";
     }

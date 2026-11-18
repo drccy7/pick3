@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Optional
 
 if sys.stdout is not None and hasattr(sys.stdout, "reconfigure"):
     try:
@@ -17,15 +18,26 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 
-from providers import ProviderType, SituationType, get_kakao_diag, get_recommendations
-from reels_script import build_reels_script
-from saved_places import (
-    extract_place_from_image,
-    load_all_saved_places,
-    pick3_from_saved,
-    resolve_place_with_kakao,
-    save_place,
-)
+try:
+    from .providers import ProviderType, SituationType, get_kakao_diag, get_recommendations
+    from .reels_script import build_reels_script
+    from .saved_places import (
+        extract_place_from_image,
+        load_all_saved_places,
+        pick3_from_saved,
+        resolve_place_with_kakao,
+        save_place,
+    )
+except ImportError:
+    from providers import ProviderType, SituationType, get_kakao_diag, get_recommendations
+    from reels_script import build_reels_script
+    from saved_places import (
+        extract_place_from_image,
+        load_all_saved_places,
+        pick3_from_saved,
+        resolve_place_with_kakao,
+        save_place,
+    )
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -50,8 +62,8 @@ class RecommendRequest(BaseModel):
     situation: SituationType
     area: str = ""
     provider: ProviderType = "kakao"
-    lat: float | None = None
-    lng: float | None = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
 
     @field_validator("query")
     @classmethod
@@ -169,8 +181,8 @@ async def list_saved() -> dict:
 
 class SavedPick3Request(BaseModel):
     area: str = ""
-    lat: float | None = None
-    lng: float | None = None
+    lat: Optional[float] = None
+    lng: Optional[float] = None
 
 
 @app.post("/api/saved/pick3")

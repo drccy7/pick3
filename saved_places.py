@@ -11,7 +11,10 @@ from pathlib import Path
 
 import httpx
 
-from providers import RestaurantPick, _build_map_urls, _format_walk_distance, _haversine_meters
+try:
+    from .providers import RestaurantPick, _build_map_urls, _format_walk_distance, _haversine_meters
+except ImportError:
+    from providers import RestaurantPick, _build_map_urls, _format_walk_distance, _haversine_meters
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_DB_PATH = BASE_DIR / "saved_places.db"
