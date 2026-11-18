@@ -31,6 +31,9 @@
       text-decoration: none; font-family: inherit; cursor: pointer;
     }
     .btn.secondary { background: transparent; border: 1px solid var(--border); color: var(--text); }
+    .steps { color: var(--muted); font-size: 14px; margin: 8px 0 0 18px; }
+    .steps li { margin-top: 4px; }
+    .steps b { color: var(--text); }
     .done { color: var(--ok); font-size: 14px; margin-top: 10px; display: none; }
     .how { margin-top: 22px; color: var(--muted); font-size: 14px; }
     .how b { color: var(--text); }
@@ -44,7 +47,13 @@
 
   <section class="step">
     <h2>① 단축어 설치</h2>
-    <p>버튼을 누르면 내 토큰이 복사되고 설치 화면이 열립니다. 토큰을 묻는 칸을 길게 눌러 <b>붙여넣기</b> 한 뒤 아래 버튼을 누르세요. 버튼이 반응하지 않으면 <b>[설정 건너뛰기]</b>를 눌러도 됩니다.</p>
+    <p>버튼을 누르면 내 토큰이 복사되고 설치 화면이 열립니다.</p>
+    <ol class="steps">
+      <li>토큰을 묻는 칸을 길게 눌러 <b>붙여넣기</b></li>
+      <li><b>리턴 키는 누르지 마세요.</b> 줄바꿈이 들어가 저장이 안 됩니다. 눌렀다면 ⌫ 한 번으로 지우기</li>
+      <li>키보드 닫기: 키보드 왼쪽 아래 <b>🌐 지구 키</b>를 누르면 나오는 <b>✕</b>를 누르기</li>
+      <li>아래 <b>[단축어 추가]</b>. 반응이 없으면 <b>[설정 건너뛰기]</b>를 눌러도 됩니다</li>
+    </ol>
     <p>저장할 때 토큰 오류가 나오면: 단축어 앱 → Pick3 저장 길게 누르기 → 편집 → 맨 위 텍스트 칸에 붙여넣기.</p>
     <button class="btn" id="installBtn" type="button">토큰 복사하고 단축어 설치</button>
     <p class="done" id="copied">✓ 토큰이 복사되었습니다</p>
