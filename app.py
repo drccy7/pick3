@@ -29,7 +29,9 @@ def _load_local_env(path: Path) -> None:
 
 _load_local_env(Path(__file__).resolve().parent / ".env")
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+import secrets
+
+from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -128,7 +130,9 @@ async def icon() -> FileResponse:
 
 @app.get("/api/health")
 async def health() -> dict:
-    return {"status": "ok", "service": "pick3", **get_kakao_diag(), **(await storage_status())}
+    return {"status": "ok", "service": "pick3", **get_kakao_diag(), **(await storage_status()),
+            "ingest_auth_configured": bool(_ingest_token()),
+            "gemini_key_configured": bool(os.getenv("GEMINI_API_KEY", "").strip())}
 
 
 @app.get("/api/presets")
@@ -172,12 +176,38 @@ async def reels_script(payload: ReelsScriptRequest) -> dict:
     return build_reels_script(rec, episode=max(1, payload.episode))
 
 
+def _ingest_token() -> str:
+    return os.getenv("PICK3_INGEST_TOKEN", "").strip()
+
+
+def _check_ingest_token(supplied: str | None) -> None:
+    """Require X-Pick3-Token when PICK3_INGEST_TOKEN is set (always set it on Render)."""
+    expected = _ingest_token()
+    if not expected:
+        return  # local dev without a token: open
+    if not supplied or not secrets.compare_digest(supplied.strip(), expected):
+        raise HTTPException(status_code=401, detail="Invalid or missing X-Pick3-Token")
+
+
 @app.post("/api/ingest/screenshot")
-async def ingest_screenshot(image: UploadFile = File(...)) -> dict:
+async def ingest_screenshot(
+    image: UploadFile = File(...),
+    x_pick3_token: Optional[str] = Header(default=None),
+) -> dict:
+    _check_ingest_token(x_pick3_token)
     raw = await image.read()
     if not raw:
         raise HTTPException(status_code=400, detail="Empty image upload")
-    extracted = await extract_place_from_image(raw, mime_type=image.content_type or "image/jpeg")
+    if not os.getenv("GEMINI_API_KEY", "").strip():
+        return {"status": "error", "message": "❌ 서버에 GEMINI_API_KEY가 설정되지 않아 화면을 분석할 수 없습니다."}
+    try:
+        extracted = await extract_place_from_image(raw, mime_type=image.content_type or "image/jpeg")
+    except Exception as exc:
+        return {
+            "status": "error",
+            "message": "❌ 화면 분석 실패 (Gemini). 잠시 후 다시 시도해 주세요.",
+            "detail": f"{type(exc).__name__}: {str(exc)[:200]}",
+        }
     if not extracted["name"]:
         return {
             "status": "not_found",

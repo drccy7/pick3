@@ -23,6 +23,12 @@ def _reset_cache() -> None:
     clear_recommend_cache()
 
 
+@pytest.fixture(autouse=True)
+def _no_ingest_token_from_local_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """app.py loads a local .env; keep ingest open unless a test sets the token."""
+    monkeypatch.delenv("PICK3_INGEST_TOKEN", raising=False)
+
+
 def test_health_and_index_served() -> None:
     health = client.get("/api/health")
     assert health.status_code == 200
@@ -820,3 +826,31 @@ def test_ingest_supabase_failure_reports_error_without_sqlite_fallback(
     assert client.post("/api/saved/pick3", json={"area": "성수"}).status_code == 503
     health = client.get("/api/health").json()
     assert health["storage"] == "supabase" and health["storage_ok"] is False
+
+
+def test_ingest_requires_token_when_configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list = []
+    _patch_ingest_upstreams(
+        monkeypatch, tmp_path,
+        sb_post=lambda: _SbResp(201, [{"id": 1, "name": "몽탄", "area": "성수", "address": "성수"}]),
+        sb_get=lambda: _SbResp(200, []),
+        calls=calls,
+    )
+    monkeypatch.setenv("PICK3_INGEST_TOKEN", "s3cret-token")
+    files = {"image": ("a.jpg", b"x", "image/jpeg")}
+
+    assert client.post("/api/ingest/screenshot", files=files).status_code == 401
+    assert client.post("/api/ingest/screenshot", files=files, headers={"X-Pick3-Token": "wrong"}).status_code == 401
+    assert calls == []  # rejected before Gemini/Supabase are touched
+
+    ok = client.post("/api/ingest/screenshot", files=files, headers={"X-Pick3-Token": "s3cret-token"})
+    assert ok.status_code == 200 and ok.json()["status"] == "saved"
+    assert client.get("/api/health").json()["ingest_auth_configured"] is True
+
+
+def test_ingest_reports_missing_gemini_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    res = client.post("/api/ingest/screenshot", files={"image": ("a.jpg", b"x", "image/jpeg")})
+    assert res.status_code == 200
+    assert res.json()["status"] == "error" and "GEMINI_API_KEY" in res.json()["message"]
+    assert client.get("/api/health").json()["gemini_key_configured"] is False
