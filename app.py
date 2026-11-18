@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 if sys.stdout is not None and hasattr(sys.stdout, "reconfigure"):
     try:
@@ -31,7 +31,7 @@ _load_local_env(Path(__file__).resolve().parent / ".env")
 
 import secrets
 
-from fastapi import FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -83,7 +83,7 @@ app.add_middleware(
         "http://127.0.0.1:8088",
         "http://localhost:8088",
     ],
-    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 if STATIC_DIR.exists():
@@ -128,6 +128,17 @@ async def manifest() -> FileResponse:
     if not path.exists():
         raise HTTPException(status_code=404, detail="manifest.json not found")
     return FileResponse(str(path), media_type="application/manifest+json")
+
+
+@app.get("/pick3.html")
+@app.get("/medical.html")
+@app.get("/start.html")
+async def extra_page(request: Request) -> FileResponse:
+    """Serve the service pages next to the index.html launcher (Render origin)."""
+    path = BASE_DIR / request.url.path.lstrip("/")
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="page not found")
+    return FileResponse(str(path))
 
 
 @app.get("/icon.svg")
@@ -391,6 +402,36 @@ async def list_medical(
     except StorageError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {"user": user["name"], "count": len(rows), "items": rows, "totals": medical.summarize(rows)}
+
+
+class MedicalEdit(BaseModel):
+    patient: Optional[str] = None
+    provider: Optional[str] = None
+    kind: Optional[str] = None
+    amount: Optional[Union[int, str]] = None
+    visit_date: Optional[str] = None
+
+
+@app.patch("/api/medical/{record_id}")
+async def edit_medical(
+    record_id: int,
+    payload: MedicalEdit,
+    x_pick3_token: Optional[str] = Header(default=None),
+) -> dict:
+    user = await _current_user(x_pick3_token)
+    try:
+        changes = medical.clean_update(payload.model_dump(exclude_unset=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
+        row = await medical.update_medical_record(record_id, user["id"], changes)
+    except medical.DuplicateRecordError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except StorageError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if not row:
+        raise HTTPException(status_code=404, detail="Record not found")
+    return row
 
 
 @app.delete("/api/medical/{record_id}")

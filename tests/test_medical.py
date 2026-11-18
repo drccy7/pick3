@@ -96,6 +96,12 @@ def _fake(monkeypatch: pytest.MonkeyPatch, gemini_payload: dict, insert_returns=
             seen["deletes"].append((url, kw))
             return _Resp(200, [{"id": 1}])
 
+        async def patch(self, url, **kw):
+            seen.setdefault("patches", []).append((url, kw))
+            if kw["json"].get("amount") == 999:
+                return _Resp(409, {"code": "23505", "message": "duplicate key"})
+            return _Resp(200, [{"id": 2, **kw["json"]}])
+
     monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
     return seen
 
@@ -163,3 +169,24 @@ def test_list_and_delete_are_scoped_to_user(monkeypatch: pytest.MonkeyPatch) -> 
 
     assert client.delete("/api/medical/2", headers=AUTH).json() == {"deleted": 2}
     assert seen["deletes"][0][1]["params"] == {"id": "eq.2", "user_id": "eq.7"}
+
+
+def test_edit_medical_record_validates_and_scopes_to_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _fake(monkeypatch, SCREEN)
+    res = client.patch("/api/medical/2", json={"kind": "안경", "amount": "169,000", "visit_date": "2025.12.16"},
+                       headers=AUTH)
+    assert res.status_code == 200
+    url, kw = seen["patches"][0]
+    assert kw["params"] == {"id": "eq.2", "user_id": "eq.7"}
+    assert kw["json"] == {"kind": "안경", "amount": 169000, "visit_date": "2025-12-16"}
+
+    assert client.patch("/api/medical/2", json={"kind": "한약"}, headers=AUTH).status_code == 422
+    assert client.patch("/api/medical/2", json={"provider": "  "}, headers=AUTH).status_code == 422
+    assert client.patch("/api/medical/2", json={}, headers=AUTH).status_code == 422
+    assert client.patch("/api/medical/2", json={"amount": 999}, headers=AUTH).status_code == 409
+    assert client.patch("/api/medical/2", json={"kind": "약국"}).status_code == 401
+
+
+def test_pages_served_on_api_origin() -> None:
+    assert "의료비 기록" in client.get("/medical.html").text
+    assert "Pick3 시작하기" in client.get("/start.html").text

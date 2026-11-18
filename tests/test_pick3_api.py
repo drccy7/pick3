@@ -40,7 +40,11 @@ def test_health_and_index_served() -> None:
 
     home = client.get("/")
     assert home.status_code == 200
-    assert "10초 맛집 결정기" in home.text
+    assert "의료비 기록" in home.text and "pick3.html" in home.text  # service launcher
+
+    app_page = client.get("/pick3.html")
+    assert app_page.status_code == 200
+    assert "10초 맛집 결정기" in app_page.text
 
 
 def test_presets_endpoint() -> None:

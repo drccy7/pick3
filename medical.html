@@ -35,13 +35,36 @@
     th { background: var(--surface-2); color: var(--muted); font-weight: 600; font-size: 12px; position: sticky; top: 0; }
     td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
     tr:last-child td { border-bottom: 0; }
-    .del { background: none; border: 0; color: var(--danger); padding: 4px 6px; font-size: 13px; }
+    tbody tr { cursor: pointer; }
+    tbody tr:active { background: var(--surface-2); }
+    .top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+    .back { color: var(--muted); font-size: 14px; text-decoration: none; border: 1px solid var(--border);
+            border-radius: 999px; padding: 6px 12px; white-space: nowrap; }
+    .hint { color: var(--muted); font-size: 12px; margin-top: 8px; }
+    dialog {
+      background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 16px;
+      padding: 18px 16px; width: min(92vw, 420px); margin: auto;
+    }
+    dialog::backdrop { background: rgba(0, 0, 0, 0.6); }
+    dialog h2 { font-size: 17px; margin-bottom: 12px; }
+    dialog label { display: block; color: var(--muted); font-size: 12px; margin-top: 10px; }
+    dialog input, dialog select {
+      width: 100%; margin-top: 4px; font: inherit; font-size: 16px; color: var(--text);
+      background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+    }
+    .dlg-actions { display: flex; gap: 8px; margin-top: 18px; }
+    .dlg-actions button { flex: 1; }
+    button.danger { color: var(--danger); }
+    .dlg-err { color: var(--danger); font-size: 13px; margin-top: 10px; min-height: 1em; }
     .msg { margin-top: 16px; color: var(--muted); font-size: 14px; }
     .err { color: var(--danger); }
   </style>
 </head>
 <body>
-  <h1>🧾 의료비 기록</h1>
+  <div class="top">
+    <h1>🧾 의료비 기록</h1>
+    <a class="back" href="./">← 홈</a>
+  </div>
   <p class="sub" id="who">병원·약국 결제 내역을 환자·연도별로 정리합니다.</p>
 
   <div class="bar">
@@ -56,11 +79,32 @@
   <div class="totals" id="totals"></div>
   <div class="wrap">
     <table>
-      <thead><tr><th>환자</th><th>날짜</th><th>기관</th><th>구분</th><th class="num">금액</th><th></th></tr></thead>
+      <thead><tr><th>환자</th><th>날짜</th><th>기관</th><th>구분</th><th class="num">금액</th></tr></thead>
       <tbody id="rows"></tbody>
     </table>
   </div>
+  <p class="hint">행을 누르면 고치거나 지울 수 있습니다.</p>
   <p class="msg" id="msg">불러오는 중…</p>
+
+  <dialog id="editDlg">
+    <form id="editForm" method="dialog">
+      <h2>기록 수정</h2>
+      <label>환자<input id="fPatient" list="patientList" autocomplete="off" /></label>
+      <datalist id="patientList"></datalist>
+      <label>날짜<input id="fDate" type="date" required /></label>
+      <label>기관<input id="fProvider" required autocomplete="off" /></label>
+      <label>구분
+        <select id="fKind"><option>병원</option><option>약국</option><option>안경</option><option>기타</option></select>
+      </label>
+      <label>금액(원)<input id="fAmount" type="number" inputmode="numeric" min="1" step="1" required /></label>
+      <p class="dlg-err" id="dlgErr"></p>
+      <div class="dlg-actions">
+        <button type="button" class="danger" id="delBtn">삭제</button>
+        <button type="button" id="cancelBtn">취소</button>
+        <button type="submit" class="primary" id="saveBtn">저장</button>
+      </div>
+    </form>
+  </dialog>
 
   <script>
     const API = "https://pick3-api.onrender.com";
@@ -91,9 +135,8 @@
     function render() {
       const rows = filtered();
       document.getElementById("rows").innerHTML = rows.map((r) => `
-        <tr><td>${esc(r.patient || "-")}</td><td>${esc(r.visit_date)}</td><td>${esc(r.provider)}</td>
-        <td>${esc(r.kind)}</td><td class="num">${won(r.amount)}</td>
-        <td><button class="del" data-id="${r.id}" type="button">삭제</button></td></tr>`).join("");
+        <tr data-id="${r.id}"><td>${esc(r.patient || "-")}</td><td>${esc(r.visit_date)}</td><td>${esc(r.provider)}</td>
+        <td>${esc(r.kind)}</td><td class="num">${won(r.amount)}</td></tr>`).join("");
       const sum = (f) => rows.filter(f).reduce((a, r) => a + r.amount, 0);
       const tiles = [["합계", sum(() => true), rows.length]]
         .concat(["병원", "약국", "안경", "기타"].map((k) => [k, sum((r) => r.kind === k), rows.filter((r) => r.kind === k).length]))
@@ -114,8 +157,7 @@
         const data = await res.json();
         all = data.items;
         document.getElementById("who").textContent = `${data.user} 님 · ${data.count}건`;
-        fillSelect(patientSel, [...new Set(all.map((r) => r.patient || ""))].filter(Boolean).sort(), "전체 환자");
-        fillSelect(yearSel, [...new Set(all.map((r) => r.visit_date.slice(0, 4)))].sort().reverse(), "전체 연도");
+        refreshFilters();
         render();
       } catch (e) {
         msg.innerHTML = `<span class="err">불러오지 못했습니다 (${esc(e.message)}). 서버가 깨어나는 중이면 30초 뒤 새로고침하세요.</span>`;
@@ -136,13 +178,73 @@
       setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     }
 
-    document.getElementById("rows").addEventListener("click", async (e) => {
-      const id = e.target.dataset?.id;
-      if (!id || !confirm("이 기록을 삭제할까요?")) return;
-      const res = await fetch(`${API}/api/medical/${id}`, { method: "DELETE", headers: { "X-Pick3-Token": token() } });
-      if (res.ok) { all = all.filter((r) => String(r.id) !== id); render(); }
-      else alert("삭제하지 못했습니다.");
+    const dlg = document.getElementById("editDlg");
+    const dlgErr = document.getElementById("dlgErr");
+    let editing = null;
+
+    function refreshFilters() {
+      fillSelect(patientSel, [...new Set(all.map((r) => r.patient || ""))].filter(Boolean).sort(), "전체 환자");
+      fillSelect(yearSel, [...new Set(all.map((r) => r.visit_date.slice(0, 4)))].sort().reverse(), "전체 연도");
+      document.getElementById("patientList").innerHTML =
+        [...new Set(all.map((r) => r.patient).filter(Boolean))].map((p) => `<option value="${esc(p)}">`).join("");
+    }
+
+    document.getElementById("rows").addEventListener("click", (e) => {
+      const tr = e.target.closest("tr[data-id]");
+      if (!tr) return;
+      editing = all.find((r) => String(r.id) === tr.dataset.id);
+      if (!editing) return;
+      fPatient.value = editing.patient || "";
+      fDate.value = editing.visit_date;
+      fProvider.value = editing.provider;
+      fKind.value = editing.kind;
+      fAmount.value = editing.amount;
+      dlgErr.textContent = "";
+      dlg.showModal();
     });
+
+    async function callApi(method, body) {
+      const res = await fetch(`${API}/api/medical/${editing.id}`, {
+        method,
+        headers: { "X-Pick3-Token": token(), ...(body ? { "Content-Type": "application/json" } : {}) },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`;
+        try { const j = await res.json(); if (typeof j.detail === "string") detail = j.detail; } catch {}
+        throw new Error(detail);
+      }
+      return res.json();
+    }
+
+    document.getElementById("editForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const changes = {};
+      const next = { patient: fPatient.value.trim(), visit_date: fDate.value, provider: fProvider.value.trim(),
+                     kind: fKind.value, amount: Number(fAmount.value) };
+      for (const [k, v] of Object.entries(next)) if (v !== editing[k]) changes[k] = v;
+      if (!Object.keys(changes).length) { dlg.close(); return; }
+      try {
+        const row = await callApi("PATCH", changes);
+        Object.assign(editing, row);
+        all.sort((a, b) => (b.visit_date.localeCompare(a.visit_date)) || (b.id - a.id));
+        refreshFilters();
+        render();
+        dlg.close();
+      } catch (err) { dlgErr.textContent = `저장하지 못했습니다: ${err.message}`; }
+    });
+
+    document.getElementById("delBtn").addEventListener("click", async () => {
+      if (!confirm("이 기록을 삭제할까요?")) return;
+      try {
+        await callApi("DELETE");
+        all = all.filter((r) => r !== editing);
+        refreshFilters();
+        render();
+        dlg.close();
+      } catch (err) { dlgErr.textContent = `삭제하지 못했습니다: ${err.message}`; }
+    });
+    document.getElementById("cancelBtn").addEventListener("click", () => dlg.close());
     for (const sel of [patientSel, yearSel, kindSel]) sel.addEventListener("change", render);
     document.getElementById("csvBtn").addEventListener("click", downloadCsv);
     load();

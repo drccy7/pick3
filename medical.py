@@ -195,6 +195,61 @@ async def delete_medical_record(record_id: int, user_id: int | None) -> bool:
     return bool(resp.json())
 
 
+class DuplicateRecordError(ValueError):
+    """The edit would make the row identical to another (same patient/provider/date/amount)."""
+
+
+def clean_update(fields: dict) -> dict:
+    """Validate a partial edit from the web table; raises ValueError with a Korean message."""
+    out: dict = {}
+    if "patient" in fields and fields["patient"] is not None:
+        out["patient"] = str(fields["patient"]).strip()[:40]
+    if "provider" in fields and fields["provider"] is not None:
+        provider = str(fields["provider"]).strip()[:80]
+        if not provider:
+            raise ValueError("기관 이름을 입력해 주세요.")
+        out["provider"] = provider
+    if "kind" in fields and fields["kind"] is not None:
+        if fields["kind"] not in KINDS:
+            raise ValueError("구분은 병원·약국·안경·기타 중 하나입니다.")
+        out["kind"] = fields["kind"]
+    if "amount" in fields and fields["amount"] is not None:
+        amount = _parse_amount(fields["amount"])
+        if not amount:
+            raise ValueError("금액은 0보다 큰 숫자여야 합니다.")
+        out["amount"] = amount
+    if "visit_date" in fields and fields["visit_date"] is not None:
+        visit_date = _parse_date(fields["visit_date"])
+        if not visit_date:
+            raise ValueError("날짜 형식이 올바르지 않습니다.")
+        out["visit_date"] = visit_date
+    if not out:
+        raise ValueError("바꿀 내용이 없습니다.")
+    return out
+
+
+async def update_medical_record(record_id: int, user_id: int | None, changes: dict) -> dict | None:
+    """Apply a validated edit to one of the user's rows. None = not found (or not theirs)."""
+    endpoint, headers = _sb()
+    owner = f"eq.{user_id}" if user_id is not None else "is.null"
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.patch(
+                endpoint,
+                headers={**headers, "Prefer": "return=representation"},
+                params={"id": f"eq.{record_id}", "user_id": owner},
+                json=changes,
+            )
+    except Exception as exc:
+        raise StorageError(f"Supabase 연결 실패: {type(exc).__name__}: {exc}") from exc
+    if resp.status_code == 409 or "23505" in resp.text:
+        raise DuplicateRecordError("같은 환자·기관·날짜·금액의 기록이 이미 있습니다.")
+    if resp.status_code != 200:
+        raise StorageError(f"Supabase update HTTP {resp.status_code}: {resp.text[:200]}")
+    rows = resp.json()
+    return rows[0] if rows else None
+
+
 def summarize(rows: list[dict]) -> list[dict]:
     """Totals per (patient, year, kind) for the web table footer."""
     totals: dict[tuple[str, str, str], dict] = {}
