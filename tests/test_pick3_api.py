@@ -854,3 +854,31 @@ def test_ingest_reports_missing_gemini_key(monkeypatch: pytest.MonkeyPatch) -> N
     assert res.status_code == 200
     assert res.json()["status"] == "error" and "GEMINI_API_KEY" in res.json()["message"]
     assert client.get("/api/health").json()["gemini_key_configured"] is False
+
+
+def test_gemini_model_env_override_and_key_in_header(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list = []
+    seen: dict = {}
+    _patch_ingest_upstreams(
+        monkeypatch, tmp_path,
+        sb_post=lambda: _SbResp(201, [{"id": 1, "name": "몽탄", "area": "성수", "address": "성수"}]),
+        sb_get=lambda: _SbResp(200, []),
+        calls=calls,
+    )
+    import httpx
+    fake = httpx.AsyncClient
+    orig_post = fake.post
+
+    async def spy_post(self, url, **kwargs):
+        if "generativelanguage" in url:
+            seen["url"], seen["headers"] = url, kwargs.get("headers", {})
+        return await orig_post(self, url, **kwargs)
+
+    monkeypatch.setattr(fake, "post", spy_post)
+    monkeypatch.delenv("PICK3_GEMINI_MODEL", raising=False)
+    assert client.get("/api/health").json()["gemini_model"] == "gemini-3.5-flash-lite"
+
+    monkeypatch.setenv("PICK3_GEMINI_MODEL", "gemini-3.8-flash")
+    client.post("/api/ingest/screenshot", files={"image": ("a.jpg", b"x", "image/jpeg")})
+    assert "/models/gemini-3.8-flash:generateContent" in seen["url"]
+    assert "key=" not in seen["url"] and seen["headers"]["x-goog-api-key"] == "fake_gemini"

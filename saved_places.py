@@ -48,8 +48,19 @@ def _init_sqlite(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
+
+
+def gemini_model() -> str:
+    """Model id is env-configurable so a retired model can be swapped without a code change.
+
+    Pin a concrete model (not a *-latest alias) so extraction behaviour does not drift silently.
+    """
+    return os.getenv("PICK3_GEMINI_MODEL", "").strip() or DEFAULT_GEMINI_MODEL
+
+
 async def extract_place_from_image(image_bytes: bytes, mime_type: str = "image/jpeg") -> dict:
-    """Use Gemini 2.5 Flash Vision to extract restaurant info from an Instagram screenshot."""
+    """Use Gemini Vision (PICK3_GEMINI_MODEL) to extract restaurant info from an Instagram screenshot."""
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY is not configured.")
@@ -62,10 +73,7 @@ async def extract_place_from_image(image_bytes: bytes, mime_type: str = "image/j
         '"signature_menu": "대표메뉴 또는 특징", "memo": "웨이팅/주차/분위기 한줄 메모"}. '
         "상호명을 찾을 수 없으면 name을 빈 문자열로 두세요."
     )
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-2.5-flash:generateContent?key={api_key}"
-    )
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model()}:generateContent"
     payload = {
         "contents": [
             {
@@ -78,7 +86,7 @@ async def extract_place_from_image(image_bytes: bytes, mime_type: str = "image/j
         "generationConfig": {"responseMimeType": "application/json", "temperature": 0.1},
     }
     async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.post(url, json=payload)
+        resp = await client.post(url, headers={"x-goog-api-key": api_key}, json=payload)
         resp.raise_for_status()
         data = resp.json()
 

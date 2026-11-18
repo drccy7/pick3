@@ -22,3 +22,5 @@ services:
         sync: false
       - key: PICK3_INGEST_TOKEN
         sync: false
+      - key: PICK3_GEMINI_MODEL
+        value: gemini-3.5-flash-lite

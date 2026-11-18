@@ -43,6 +43,7 @@ try:
     from .saved_places import (
         StorageError,
         extract_place_from_image,
+        gemini_model,
         load_all_saved_places,
         pick3_from_saved,
         resolve_place_with_kakao,
@@ -55,6 +56,7 @@ except ImportError:
     from saved_places import (
         StorageError,
         extract_place_from_image,
+        gemini_model,
         load_all_saved_places,
         pick3_from_saved,
         resolve_place_with_kakao,
@@ -132,7 +134,8 @@ async def icon() -> FileResponse:
 async def health() -> dict:
     return {"status": "ok", "service": "pick3", **get_kakao_diag(), **(await storage_status()),
             "ingest_auth_configured": bool(_ingest_token()),
-            "gemini_key_configured": bool(os.getenv("GEMINI_API_KEY", "").strip())}
+            "gemini_key_configured": bool(os.getenv("GEMINI_API_KEY", "").strip()),
+            "gemini_model": gemini_model()}
 
 
 @app.get("/api/presets")
