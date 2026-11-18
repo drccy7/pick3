@@ -31,7 +31,7 @@ _load_local_env(Path(__file__).resolve().parent / ".env")
 
 import secrets
 
-from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -233,11 +233,8 @@ def _daily_limits(user: dict) -> tuple[int, int]:
 async def ingest_screenshot(
     image: UploadFile = File(...),
     x_pick3_token: Optional[str] = Header(default=None),
-    token: Optional[str] = Form(default=None),
 ) -> dict:
-    # The token may also come as a form field: an iOS import-question value can pick up a
-    # trailing newline, which iOS refuses to send in a header but sends fine in a form body.
-    user = await _current_user(x_pick3_token or token)
+    user = await _current_user(x_pick3_token)
     raw = await image.read()
     if not raw:
         raise HTTPException(status_code=400, detail="Empty image upload")

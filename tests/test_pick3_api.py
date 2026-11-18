@@ -886,21 +886,6 @@ def test_supabase_mode_requires_registered_user_token(tmp_path: Path, monkeypatc
     assert health["auth_mode"] == "per_user" and health["ingest_auth_configured"] is True
 
 
-def test_ingest_accepts_token_as_form_field_with_newline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list = []
-    _patch_ingest_upstreams(
-        monkeypatch, tmp_path,
-        sb_post=lambda: _SbResp(201, [{"id": 1, "name": "몽탄", "area": "성수", "address": "성수"}]),
-        sb_get=lambda: _SbResp(200, []),
-        calls=calls,
-    )
-    files = {"image": ("a.jpg", b"x", "image/jpeg")}
-    res = client.post("/api/ingest/screenshot", files=files, data={"token": TOKEN_A + "\n"})
-    assert res.status_code == 200 and res.json()["status"] == "saved"
-    assert calls[0][2]["json"]["user_id"] == 1
-    assert client.post("/api/ingest/screenshot", files=files, data={"token": "nope"}).status_code == 401
-
-
 def test_saved_list_is_filtered_by_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list = []
     _patch_ingest_upstreams(
