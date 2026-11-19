@@ -1,0 +1,30 @@
+#include 'actions/documents'
+#include 'actions/web'
+#include 'actions/media'
+#define inputs image, pdf, file, text
+#define from sharesheet
+
+/* 시작 페이지의 [단축어에 내 계정 연결] 버튼이 토큰을 텍스트로 넘겨 줌 */
+@input = "{ShortcutInput}"
+if @input beginsWith "p3_" {
+    saveFile("pick3_token.txt", @input, true)
+    show("✅ 연결 완료. 이제 화면이나 PDF를 공유하면 저장됩니다.")
+    stop()
+}
+
+@tokenFile = getFile("pick3_token.txt", nil, false)
+if !@tokenFile {
+    show("먼저 Pick3 시작 페이지에서 [단축어에 내 계정 연결]을 눌러 주세요.")
+    stop()
+}
+@token = "{@tokenFile}"
+
+if !ShortcutInput {
+    @image = takeScreenshot()
+} else {
+    @image = ShortcutInput
+}
+
+@response = formRequest("https://pick3-api.onrender.com/api/ingest/medical", "POST", {"image": "{@image}"}, {"X-Pick3-Token": "{@token}"})
+@message = getValue(@response, "message")
+show("{@message}")
