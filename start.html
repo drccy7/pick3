@@ -42,22 +42,23 @@
   </style>
 </head>
 <body>
-  <h1>📌 Pick3 인스타 맛집 저장</h1>
-  <p class="sub" id="greet">버튼 두 개만 누르면 준비가 끝납니다.</p>
+  <h1>📌 Pick3 시작하기</h1>
+  <p class="sub" id="greet">버튼 두 번이면 준비가 끝납니다. 붙여넣기는 없습니다.</p>
 
   <section class="step">
     <h2>① 단축어 설치</h2>
-    <p>버튼을 누르면 내 토큰이 복사되고 설치 화면이 열립니다.</p>
-    <ol class="steps">
-      <li>토큰을 묻는 칸을 길게 눌러 <b>붙여넣기</b></li>
-      <li><b>리턴 키는 누르지 마세요.</b> 줄바꿈이 들어가 저장이 안 됩니다. 눌렀다면 ⌫ 한 번으로 지우기</li>
-      <li>키보드 닫기: 키보드 왼쪽 아래 <b>🌐 지구 키</b>를 누르면 나오는 <b>✕</b>를 누르기</li>
-      <li>아래 <b>[단축어 추가]</b>. 반응이 없으면 <b>[설정 건너뛰기]</b>를 눌러도 됩니다</li>
-    </ol>
-    <p>저장할 때 토큰 오류가 나오면: 단축어 앱 → 해당 단축어 길게 누르기 → 편집 → 맨 위 텍스트 칸에 붙여넣기.</p>
-    <button class="btn install" type="button" data-url="https://www.icloud.com/shortcuts/6a903267abf944b99158e1214fffcf1c">🍽️ 맛집 저장 단축어 설치</button>
-    <button class="btn install" type="button" data-url="https://www.icloud.com/shortcuts/751eda5649704a42a0447a86f8fced72">🧾 의료비 저장 단축어 설치</button>
-    <p class="done" id="copied">✓ 토큰이 복사되었습니다. 필요한 것만 설치하면 됩니다(둘 다 해도 됨)</p>
+    <p>필요한 것을 눌러 <b>[단축어 추가]</b>만 누르세요(둘 다 해도 됨). 같은 이름의 예전 단축어가 있으면 먼저 지우세요.</p>
+    <a class="btn" href="https://www.icloud.com/shortcuts/6a903267abf944b99158e1214fffcf1c">🍽️ 맛집 저장 (Pick3 저장) 설치</a>
+    <a class="btn" href="https://www.icloud.com/shortcuts/751eda5649704a42a0447a86f8fced72">🧾 의료비 저장 설치</a>
+  </section>
+
+  <section class="step">
+    <h2>② 단축어에 내 계정 연결</h2>
+    <p>설치한 단축어 중 <b>아무거나 하나</b>를 누르세요. 단축어 앱이 열리고 "✅ 연결 완료"가 뜨면 끝입니다(두 단축어가 같이 연결됨).</p>
+    <p>처음엔 "파일 접근 허용"을 물을 수 있어요 → <b>허용</b>.</p>
+    <button class="btn connect" type="button" data-name="의료비 저장">🧾 의료비 저장으로 연결</button>
+    <button class="btn connect secondary" type="button" data-name="Pick3 저장">🍽️ Pick3 저장으로 연결</button>
+    <p class="done" id="connectNote">단축어 앱이 안 열리면 Safari에서 이 페이지를 다시 열어 눌러 주세요.</p>
   </section>
 
   <section class="step">
@@ -81,7 +82,7 @@
   <script>
     // Token rides in the URL fragment (#t=...), which browsers never send to any server.
     // account.js stores it (asking first if this device already has another account).
-    // The install button always copies the LINK's token: that is the person being set up.
+    // The connect button always sends the LINK's token: that is the person being set up.
     const myToken = Pick3Account.linkToken || Pick3Account.getToken();
     if (Pick3Account.linkToken) { try { localStorage.setItem("pick3_last_prov", "saved"); } catch {} }
     if (!myToken) {
@@ -89,16 +90,13 @@
         '<span class="err">개인 링크로 열어 주세요. 받은 링크 전체(# 뒤까지)를 열어야 합니다.</span>';
     }
 
-    for (const btn of document.querySelectorAll(".install")) btn.addEventListener("click", async () => {
-      if (myToken) {
-        try {
-          await navigator.clipboard.writeText(myToken);
-          document.getElementById("copied").style.display = "block";
-        } catch {
-          prompt("아래 토큰을 길게 눌러 복사한 뒤 확인을 누르세요:", myToken);
-        }
-      }
-      setTimeout(() => { location.href = btn.dataset.url; }, 400);
+    // shortcuts:// run link hands the token to the Shortcut as text input; the Shortcut saves it
+    // to Shortcuts/pick3_token.txt, which both Pick3 Shortcuts read on every run.
+    for (const btn of document.querySelectorAll(".connect")) btn.addEventListener("click", () => {
+      if (!myToken) return;
+      document.getElementById("connectNote").style.display = "block";
+      location.href = "shortcuts://run-shortcut?name=" + encodeURIComponent(btn.dataset.name) +
+        "&input=text&text=" + encodeURIComponent(myToken);
     });
   </script>
 </body>
