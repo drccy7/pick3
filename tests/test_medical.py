@@ -303,3 +303,11 @@ def test_shortcut_upload_with_bad_token_gets_a_readable_message(monkeypatch: pyt
     assert res.status_code == 401 and body["detail"] == "Invalid or missing X-Pick3-Token"
     assert "내 계정 연결" in body["message"] and "15자, 'pick…'로 시작" in body["message"]
     assert "token.txt" not in body["message"]  # never echo the token itself
+
+
+def test_upload_without_file_field_explains_in_message() -> None:
+    res = client.post("/api/ingest/screenshot", data={"image": "not a file"}, headers=AUTH)
+    body = res.json()
+    assert res.status_code == 422 and "파일(image)" in body["message"] and body["detail"]
+    plain = client.post("/api/recommend", json={})  # other endpoints keep FastAPI's default shape
+    assert "message" not in plain.json()

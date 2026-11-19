@@ -33,6 +33,8 @@ import secrets
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
@@ -246,6 +248,18 @@ class _IngestAuthError(Exception):
 
     def __init__(self, status_code: int, detail: str, message: str) -> None:
         self.status_code, self.detail, self.message = status_code, detail, message
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Shortcut uploads that miss the `image` file field: explain it in `message` (shown on the phone)."""
+    body = {"detail": jsonable_encoder(exc.errors())}
+    if request.url.path.startswith("/api/ingest/"):
+        problems = "; ".join(f"{'.'.join(str(p) for p in e.get('loc', []))}: {e.get('msg', '')}" for e in exc.errors())
+        body["status"] = "error"
+        body["message"] = ("❌ 단축어가 보낸 요청에 파일(image)이 제대로 들어 있지 않습니다."
+                           f"\n({problems[:200]} · Content-Type: {request.headers.get('content-type', '없음')[:60]})")
+    return JSONResponse(status_code=422, content=body)
 
 
 @app.exception_handler(_IngestAuthError)
