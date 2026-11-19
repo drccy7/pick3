@@ -63,6 +63,18 @@
     .err { color: #ff8a8a; font-size: 13px; margin-top: 8px; min-height: 1em; }
     .ok { color: #7ee2a8; }
     [hidden] { display: none !important; }
+    .jobs { margin-top: 12px; }
+    .job {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px; margin-top: 8px;
+    }
+    .job .head { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; }
+    .job .msg { white-space: pre-line; font-size: 14px; margin-top: 6px; }
+    .job.running .msg::before {
+      content: ""; display: inline-block; width: 12px; height: 12px; margin-right: 8px; vertical-align: -1px;
+      border: 2px solid var(--muted); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.9s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .job.running .msg::before { animation: none; } }
     .foot { margin-top: 24px; color: var(--muted); font-size: 12px; }
     .foot a { color: var(--muted); }
     @media (max-width: 340px) { .grid { grid-template-columns: 1fr; } }
@@ -103,6 +115,8 @@
     </div>
     <div class="err" id="pinErr" role="alert"></div>
   </form>
+
+  <section class="jobs" id="jobs" hidden aria-live="polite"></section>
 
   <nav class="grid" id="grid" aria-label="서비스"></nav>
 
@@ -172,9 +186,31 @@
         $("loginErr").textContent = "로그인이 끝났거나 토큰이 맞지 않습니다. 다시 들어가 주세요.";
       } else {
         el.textContent = n ? `${n} 님` : "확인 못 함 (서버 깨우는 중)";
-        if (n) offerPin();
+        if (n) { offerPin(); loadJobs(); }
       }
     }
+
+    // Shared links are processed in the background (20-40 s): show progress here.
+    let jobsTimer = null;
+    async function loadJobs() {
+      clearTimeout(jobsTimer);
+      const token = Pick3Account.getToken();
+      if (!token) { $("jobs").hidden = true; return; }
+      let jobs = [];
+      try {
+        const res = await fetch(`${Pick3Account.API}/api/jobs`, { headers: { "X-Pick3-Token": token } });
+        if (res.ok) jobs = (await res.json()).jobs || [];
+      } catch { /* server asleep: try again later */ }
+      const box = $("jobs");
+      box.hidden = !jobs.length;
+      box.innerHTML = jobs.length ? '<h2 style="font-size:15px">최근 처리</h2>' + jobs.map((j) => `
+        <div class="job ${j.status === "running" ? "running" : ""}">
+          <div class="head"><span>🔗 ${esc(j.site || "링크")}</span><span>${esc(j.started || "")}${j.finished ? " → " + esc(j.finished) : ""}</span></div>
+          <div class="msg">${esc(j.message || "")}</div>
+        </div>`).join("") : "";
+      if (jobs.some((j) => j.status === "running")) jobsTimer = setTimeout(loadJobs, 3000);
+    }
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) loadJobs(); });
 
     $("loginPanel").addEventListener("submit", async (e) => {
       e.preventDefault();

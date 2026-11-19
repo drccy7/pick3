@@ -12,6 +12,7 @@ if sys.stdout is not None and hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
+import collections
 import os
 
 
@@ -33,7 +34,7 @@ import re
 import secrets
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -293,6 +294,7 @@ def _daily_limits(user: dict) -> tuple[int, int]:
 
 @app.post("/api/ingest/screenshot")
 async def ingest_screenshot(
+    background: BackgroundTasks,
     image: UploadFile = File(...),
     x_pick3_token: Optional[str] = Header(default=None),
 ) -> dict:
@@ -317,27 +319,12 @@ async def ingest_screenshot(
     if usage["total_count"] > total_limit:
         return {"status": "limited", "message": "오늘 서비스 전체 분석 한도에 도달했습니다. 내일 다시 시도해 주세요."}
 
-    if link:  # a shared link to a supported site: render it like a phone browser, then treat as a PDF
-        try:
-            pages, final_url, text_chars = await link_render.render(link)
-        except link_render.LinkError as exc:
-            return {"status": "error", "service": "none", "message": f"🔗 링크를 열지 못했습니다: {exc}"}
-        except Exception as exc:
-            return {"status": "error", "service": "none",
-                    "message": "🔗 링크를 여는 중 문제가 생겼습니다. 잠시 후 다시 시도하거나 화면을 캡처해 보내 주세요.",
-                    "detail": f"{type(exc).__name__}: {str(exc)[:200]}"}
-        # One PDF per person tab on the page (name = that tab's label), or one PDF without a name.
-        results = [await _save_medical_document(user, pdf, "application/pdf", name, None) for name, pdf in pages]
-        result = next((r for r in results if r.get("status") == "saved"), results[0])
-        if len(results) > 1:
-            result = {**result, "results": results,
-                      "status": "saved" if any(r.get("status") == "saved" for r in results) else result.get("status"),
-                      "message": "\n\n".join(r["message"] for r in results)}
-        result["message"] = "🔗 링크에서 읽음\n" + result["message"]
-        if result.get("status") != "saved":
-            final = urlsplit(final_url)
-            result["message"] += f"\n(연 페이지: {final.hostname}{final.path} · 글자 {text_chars}자)"
-        return result
+    if link:  # a shared link: opening it takes 20-40 s, so answer now and work in the background
+        job = _new_job(user, link)
+        background.add_task(_run_link_job, user, link, job)
+        return {"status": "accepted", "service": "link", "job_id": job["id"],
+                "message": "🔗 링크를 받았습니다. 페이지를 열어 읽는 중입니다(20~40초).\n"
+                           "결과는 Pick3 홈의 '최근 처리'에서 볼 수 있습니다."}
 
     # One Shortcut for every service: classify first, then use that service's own extractor.
     mime = medical.sniff_mime(raw, image.content_type or "image/jpeg")
@@ -365,6 +352,55 @@ async def ingest_screenshot(
     elif result["status"] == "not_found":
         result["message"] = ("화면에서 맛집·의료비·처방 내용을 찾지 못했습니다. "
                              "상호나 결제 내역이 보이는 화면에서 다시 시도해 주세요.")
+    return result
+
+
+# ---- background jobs for shared links (in memory, last few per user) ------------------------
+_JOBS: dict[object, "collections.deque[dict]"] = {}
+
+
+def _new_job(user: dict, link: str) -> dict:
+    job = {"id": secrets.token_hex(4), "kind": "link", "status": "running",
+           "site": urlsplit(link).hostname or "", "started": _kst_now(), "message": "페이지를 여는 중…"}
+    _JOBS.setdefault(user.get("id"), collections.deque(maxlen=5)).append(job)
+    return job
+
+
+def _kst_now() -> str:
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) + timedelta(hours=9)).strftime("%m-%d %H:%M")
+
+
+async def _run_link_job(user: dict, link: str, job: dict) -> None:
+    try:
+        result = await _process_link(user, link)
+    except Exception as exc:  # never leave a job "running"
+        result = {"status": "error", "message": f"❌ 처리 중 오류: {type(exc).__name__}"}
+    job.update(status="done" if result.get("status") == "saved" else "error", message=result.get("message", ""),
+               finished=_kst_now())
+
+
+async def _process_link(user: dict, link: str) -> dict:
+    """Render a shared link like a phone browser and save it as medical PDF(s)."""
+    try:
+        pages, final_url, text_chars = await link_render.render(link)
+    except link_render.LinkError as exc:
+        return {"status": "error", "service": "none", "message": f"🔗 링크를 열지 못했습니다: {exc}"}
+    except Exception as exc:
+        return {"status": "error", "service": "none",
+                "message": "🔗 링크를 여는 중 문제가 생겼습니다. 잠시 후 다시 시도하거나 화면을 캡처해 보내 주세요.",
+                "detail": f"{type(exc).__name__}: {str(exc)[:200]}"}
+    # One PDF per person tab on the page (name = that tab's label), or one PDF without a name.
+    results = [await _save_medical_document(user, pdf, "application/pdf", name, None) for name, pdf in pages]
+    result = next((r for r in results if r.get("status") == "saved"), results[0])
+    if len(results) > 1:
+        result = {**result, "results": results,
+                  "status": "saved" if any(r.get("status") == "saved" for r in results) else result.get("status"),
+                  "message": "\n\n".join(r["message"] for r in results)}
+    result["message"] = "🔗 링크에서 읽음\n" + result["message"]
+    if result.get("status") != "saved":
+        final = urlsplit(final_url)
+        result["message"] += f"\n(연 페이지: {final.hostname}{final.path} · 글자 {text_chars}자)"
     return result
 
 
@@ -437,6 +473,13 @@ async def _save_restaurant(user: dict, raw: bytes, mime: str) -> dict:
         "verified": bool(resolved.get("verified")),
         "place": saved,
     }
+
+
+@app.get("/api/jobs")
+async def recent_jobs(x_pick3_token: Optional[str] = Header(default=None)) -> dict:
+    """Recent background jobs (shared links) of this user, newest first."""
+    user = await _current_user(x_pick3_token)
+    return {"jobs": list(reversed(_JOBS.get(user.get("id"), [])))}
 
 
 @app.get("/api/me")
