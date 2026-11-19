@@ -85,6 +85,7 @@ pytest tests/test_pick3_api.py -v
 
 ### 단축어 설치 (링크)
 
+> 설치 링크(iCloud, 토큰 없음): https://www.icloud.com/shortcuts/5de552eb9c4b43958b160d64e31152e6 — 단축어를 고치면 shortcuts/에서 다시 만들고 새 iCloud 링크로 바꿈
 > **현재 방식 (2026-11):** 시작 페이지에서 **`Pick3` 단축어 하나**(화면 캡처·PDF·파일 모두, `/api/ingest/screenshot`이 PDF는 의료 문서로 처리)를 **[① 설치] → [② 내 계정 연결]**. 설치 파일은 `shortcuts/`의 Cherri 소스로 만들어 서명한 것이고, 토큰은 `Shortcuts/pick3_token.txt`에 저장됩니다. 단축어 이름은 영문만 씁니다(한글 이름은 파일로 가져오면 자모 분리되어 이름으로 실행이 안 됨). 카톡에서 시작 링크를 열면 Safari로 자동으로 넘어갑니다. 아래 iCloud 링크·직접 만들기 안내는 예전 방식(`Pick3 저장`·`의료비 저장`) 기록입니다.
 
 [Pick3 저장 단축어](https://www.icloud.com/shortcuts/6a903267abf944b99158e1214fffcf1c) → **단축어 추가**만. 링크는 모두에게 같고 토큰이 없습니다.
