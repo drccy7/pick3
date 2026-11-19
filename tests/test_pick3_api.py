@@ -1059,3 +1059,18 @@ def test_ingest_unverified_place_is_flagged(tmp_path: Path, monkeypatch: pytest.
 
     recall = client.post("/api/saved/pick3", json={"area": "성수"}).json()
     assert recall["top_pick"]["role_badge"] == "내 저장 · 위치 확인 필요"
+
+
+def test_delete_saved_place_is_scoped_to_the_caller(monkeypatch: pytest.MonkeyPatch) -> None:
+    import saved_places
+    from test_medical import AUTH, SCREEN, _fake
+    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setenv("SUPABASE_KEY", "sb_secret_fake")
+    saved_places.clear_user_cache()
+    seen = _fake(monkeypatch, SCREEN)
+    res = client.delete("/api/saved/42", headers=AUTH)
+    assert res.status_code == 200 and res.json() == {"status": "deleted", "id": 42}
+    url, kw = seen["deletes"][0]
+    assert url.endswith("/pick3_saved_places") and kw["params"] == {"id": "eq.42", "user_id": "eq.7"}
+    assert client.delete("/api/saved/42").status_code == 401
+    assert client.get("/saved.html").status_code == 200

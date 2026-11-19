@@ -561,3 +561,30 @@ async def pick3_from_saved(
         "alternatives": [p.to_dict() for p in picks[1:3]],
         "reserve_picks": [p.to_dict() for p in picks[3:6]],
     }
+
+
+async def delete_saved_place(place_id: int, user_id: int | None) -> bool:
+    """Delete one of the user's saved places. True if a row was removed."""
+    sb = _supabase_headers()
+    if sb:
+        base_url, headers = sb
+        owner = f"eq.{user_id}" if user_id is not None else "is.null"
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.delete(
+                    f"{base_url}/rest/v1/{SUPABASE_TABLE}",
+                    headers={**headers, "Prefer": "return=representation"},
+                    params={"id": f"eq.{place_id}", "user_id": owner},
+                )
+        except Exception as exc:
+            raise StorageError(f"Supabase 연결 실패: {type(exc).__name__}: {exc}") from exc
+        if resp.status_code != 200:
+            raise StorageError(f"Supabase delete HTTP {resp.status_code}: {resp.text[:200]}")
+        return bool(resp.json())
+    db_path = _get_db_path()
+    if not db_path.exists():
+        return False
+    with sqlite3.connect(db_path) as conn:
+        _init_sqlite(conn)
+        cur = conn.execute("DELETE FROM pick3_saved_places WHERE id = ?", (place_id,))
+        return cur.rowcount > 0

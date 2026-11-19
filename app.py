@@ -52,6 +52,7 @@ try:
         extract_place_from_image,
         find_user_by_token,
         gemini_model,
+        delete_saved_place,
         load_all_saved_places,
         pick3_from_saved,
         resolve_place_with_kakao,
@@ -73,6 +74,7 @@ except ImportError:
         extract_place_from_image,
         find_user_by_token,
         gemini_model,
+        delete_saved_place,
         load_all_saved_places,
         pick3_from_saved,
         resolve_place_with_kakao,
@@ -144,6 +146,7 @@ async def manifest() -> FileResponse:
 @app.get("/medical.html")
 @app.get("/prescriptions.html")
 @app.get("/start.html")
+@app.get("/saved.html")
 async def extra_page(request: Request) -> FileResponse:
     """Serve the service pages next to the index.html launcher (Render origin)."""
     path = BASE_DIR / request.url.path.lstrip("/")
@@ -557,6 +560,19 @@ async def list_saved(x_pick3_token: Optional[str] = Header(default=None)) -> dic
     except StorageError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return {"user": user["name"], "count": len(rows), "items": rows}
+
+
+@app.delete("/api/saved/{place_id}")
+async def delete_saved(place_id: int, x_pick3_token: Optional[str] = Header(default=None)) -> dict:
+    """Remove one of the caller's saved places (only their own rows can match)."""
+    user = await _current_user(x_pick3_token)
+    try:
+        removed = await delete_saved_place(place_id, user["id"])
+    except StorageError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if not removed:
+        raise HTTPException(status_code=404, detail="not found")
+    return {"status": "deleted", "id": place_id}
 
 
 class SavedPick3Request(BaseModel):
