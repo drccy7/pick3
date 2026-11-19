@@ -92,7 +92,7 @@
     // Token rides in the URL fragment (#t=...), which browsers never send to any server.
     // account.js stores it (asking first if this device already has another account).
     // The connect button always sends the LINK's token: that is the person being set up.
-    const myToken = Pick3Account.linkToken || Pick3Account.getToken();
+    let myToken = Pick3Account.linkToken || Pick3Account.getToken();
     if (Pick3Account.linkToken) { try { localStorage.setItem("pick3_last_prov", "saved"); } catch {} }
     if (!myToken) {
       document.getElementById("greet").innerHTML =
@@ -101,8 +101,17 @@
 
     // shortcuts:// run link hands the token to the Shortcut as text input; the Shortcut saves it
     // to Shortcuts/pick3_token.txt, which both Pick3 Shortcuts read on every run.
-    for (const btn of document.querySelectorAll(".connect")) btn.addEventListener("click", () => {
-      if (!myToken) return;
+    for (const btn of document.querySelectorAll(".connect")) btn.addEventListener("click", async () => {
+      if (!myToken) {
+        // No account in this browser (opened without #t=...): let them sign in right here.
+        if (!confirm("이 브라우저에는 아직 내 계정이 없습니다.\n\n받은 개인 시작 링크 전체나 토큰을 붙여넣을까요?\n(받은 링크를 Safari에서 다시 열어도 됩니다)")) return;
+        const name = await Pick3Account.switchInteractive();
+        if (!name) return;
+        myToken = Pick3Account.getToken();
+        // Safari may block opening another app after an async step: ask for a fresh tap.
+        document.getElementById("greet").textContent = `✓ ${name} 님 계정 확인. [② 내 계정 연결]을 한 번 더 눌러 주세요.`;
+        return;
+      }
       document.getElementById("connectNote").style.display = "block";
       location.href = "shortcuts://run-shortcut?name=" + encodeURIComponent(btn.dataset.name) +
         "&input=text&text=" + encodeURIComponent(myToken);
