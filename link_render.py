@@ -67,8 +67,8 @@ def check_url(url: str) -> str:
     return url
 
 
-async def render(url: str, timeout_ms: int = 30000) -> tuple[bytes, str, int]:
-    """Render `url` like a phone browser. Returns (pdf, final_url, visible_text_chars)."""
+async def render(url: str, timeout_ms: int = 30000) -> tuple[list[tuple[str, bytes]], str, int]:
+    """Render `url` like a phone browser. Returns ([(person_tab_name or "", pdf)], final_url, text_chars)."""
     check_url(url)
     from playwright.async_api import async_playwright  # heavy import, only when used
 
@@ -95,14 +95,50 @@ async def render(url: str, timeout_ms: int = 30000) -> tuple[bytes, str, int]:
                 text = await _settle(page)
                 if len(text.strip()) < 30:
                     raise LinkError("페이지에 내용이 없습니다(링크가 만료됐을 수 있음).")
-                pdf = await page.pdf(width="430px", print_background=False,
-                                     margin={"top": "8mm", "bottom": "8mm", "left": "4mm", "right": "4mm"})
+                pages: list[tuple[str, bytes]] = []
+                tabs = await page.evaluate(_FIND_NAME_TABS)
+                for name in tabs:  # one PDF per person tab (가족·고객 탭); [] -> just the page as is
+                    await page.evaluate(_CLICK_NAME_TAB, name)
+                    await page.wait_for_load_state("networkidle")
+                    await _settle(page)
+                    pages.append((name, await _pdf(page)))
+                if not pages:
+                    pages.append(("", await _pdf(page)))
                 final_url = page.url
             finally:
                 await browser.close()
-    if len(pdf) > MAX_PDF_BYTES:
+    if sum(len(p) for _, p in pages) > MAX_PDF_BYTES:
         raise LinkError("페이지가 너무 큽니다.")
-    return pdf, final_url, len(text)
+    return pages, final_url, len(text)
+
+
+# A group of >= 2 sibling buttons (or role=tab) whose labels are all 2-4 syllable Hangul names is
+# treated as person tabs. The page itself only shows the selected person; the link URL does not
+# carry that choice, so we visit every tab.
+_FIND_NAME_TABS = r"""() => {
+  const isName = t => /^[가-힣]{2,4}$/.test(t);
+  const groups = new Map();
+  for (const b of document.querySelectorAll('button, [role=tab]')) {
+    const p = b.parentElement;
+    if (!p || groups.has(p)) continue;
+    const kids = [...p.children].filter(k => k.matches('button, [role=tab]'));
+    const names = kids.map(k => (k.innerText || '').trim());
+    if (kids.length >= 2 && names.every(isName) && new Set(names).size === names.length) groups.set(p, names);
+  }
+  return groups.size === 1 ? [...groups.values()][0] : [];
+}"""
+
+_CLICK_NAME_TAB = r"""(name) => {
+  for (const b of document.querySelectorAll('button, [role=tab]')) {
+    if ((b.innerText || '').trim() === name) { if (!b.disabled) b.click(); return true; }
+  }
+  return false;
+}"""
+
+
+async def _pdf(page) -> bytes:
+    return await page.pdf(width="430px", print_background=False,
+                          margin={"top": "8mm", "bottom": "8mm", "left": "4mm", "right": "4mm"})
 
 
 async def _settle(page, rounds: int = 12, pause_ms: int = 700) -> str:
@@ -121,5 +157,5 @@ async def _settle(page, rounds: int = 12, pause_ms: int = 700) -> str:
 
 
 async def render_pdf(url: str, timeout_ms: int = 30000) -> bytes:
-    pdf, _final, _chars = await render(url, timeout_ms)
-    return pdf
+    pages, _final, _chars = await render(url, timeout_ms)
+    return pages[0][1]

@@ -51,13 +51,13 @@ def test_ingest_link_renders_and_saves_medical_rows(monkeypatch: pytest.MonkeyPa
 
     async def fake_render(url: str):
         opened.append(url)
-        return b"%PDF-1.7 rendered page", url, 900
+        return [("", b"%PDF-1.7 rendered page")], url, 900
 
     monkeypatch.setattr(link_render, "render", fake_render)
     res = client.post("/api/ingest/screenshot", headers=AUTH,
                       files={"image": ("text.txt", LINK.encode(), "text/plain")}).json()
     assert opened == [LINK]
-    assert res["service"] == "medical" and res["message"].startswith("🧾 의료비 기록 (링크)\n")
+    assert res["service"] == "medical" and res["message"].startswith("🔗 링크에서 읽음\n")
     assert seen["posts"][0][0].endswith("/pick3_medical_records")
 
 
@@ -86,3 +86,18 @@ def test_downloaded_html_instead_of_link_is_explained(monkeypatch: pytest.Monkey
     html = b"<!DOCTYPE html><html><head><title>_</title></head><body><div id=app></div></body></html>"
     res = client.post("/api/ingest/screenshot", headers=AUTH, files={"image": ("result", html, "text/html")}).json()
     assert res["status"] == "unsupported" and "HTML" in res["message"] and seen["gemini"] == []
+
+
+def test_link_with_person_tabs_saves_each_tab_under_its_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _fake(monkeypatch, [SCREEN, SCREEN])
+
+    async def fake_render(url: str):
+        return [("홍길동", b"%PDF-1.7 tab one"), ("김예시", b"%PDF-1.7 tab two")], url, 900
+
+    monkeypatch.setattr(link_render, "render", fake_render)
+    res = client.post("/api/ingest/screenshot", headers=AUTH,
+                      files={"image": ("text.txt", LINK.encode(), "text/plain")}).json()
+    assert res["status"] == "saved" and len(res["results"]) == 2
+    patients = [{r["patient"] for r in kw["json"]} for url, kw in seen["posts"] if url.endswith("/pick3_medical_records")]
+    assert patients == [{"홍길동"}, {"김예시"}]  # the tab name wins over the name read from the page
+    assert "홍길동" in res["message"] and "김예시" in res["message"]
