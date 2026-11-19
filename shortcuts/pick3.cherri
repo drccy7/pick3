@@ -1,14 +1,14 @@
 #include 'actions/documents'
 #include 'actions/web'
 #include 'actions/media'
-#define inputs image, text
+#define inputs image, pdf, file, text
 #define from sharesheet
 
 /* 시작 페이지의 [단축어에 내 계정 연결] 버튼이 토큰을 텍스트로 넘겨 줌 */
 @input = "{ShortcutInput}"
 if @input beginsWith "p3_" {
     saveFile("pick3_token.txt", @input, true)
-    show("✅ 연결 완료. 이제 인스타 화면을 공유하면 저장됩니다.")
+    show("✅ 연결 완료. 이제 화면이나 PDF를 공유하면 저장됩니다.")
     stop()
 }
 

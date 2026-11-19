@@ -256,6 +256,8 @@ async def ingest_screenshot(
     raw = await image.read()
     if not raw:
         raise HTTPException(status_code=400, detail="Empty image upload")
+    if len(raw) > medical.MAX_UPLOAD_BYTES:
+        return {"status": "error", "message": "❌ 파일이 너무 큽니다(15MB 초과). 쪽을 나눠 보내 주세요."}
     if not os.getenv("GEMINI_API_KEY", "").strip():
         return {"status": "error", "message": "❌ 서버에 GEMINI_API_KEY가 설정되지 않아 화면을 분석할 수 없습니다."}
     try:
@@ -270,6 +272,12 @@ async def ingest_screenshot(
 
     # One Shortcut for every service: classify first, then use that service's own extractor.
     mime = medical.sniff_mime(raw, image.content_type or "image/jpeg")
+    if mime == "application/pdf":
+        # PDFs are medical documents (처방조제정보, 진료비 영수증); no restaurant arrives as a PDF.
+        result = await _save_medical_document(user, raw, mime, "", image.filename)
+        if result["service"] == "medical":
+            result["message"] = "🧾 의료비 기록\n" + result["message"]
+        return result
     if screen_router.auto_route_enabled():
         kind = await screen_router.classify_screen(raw, mime)
         if kind == "medical":
@@ -452,19 +460,30 @@ async def ingest_medical(
         return {"status": "limited", "message": f"오늘 분석 한도({per_user_limit}건)를 넘었습니다. 내일 다시 시도해 주세요."}
 
     mime = medical.sniff_mime(raw, image.content_type)
+    return await _save_medical_document(user, raw, mime, chosen, image.filename)
+
+
+async def _save_medical_document(user: dict, raw: bytes, mime: str, chosen: str, filename: str | None) -> dict:
+    """A medical document (PDF or image): 처방조제정보 -> prescriptions, else payments (-> prescriptions)."""
     if prescriptions.is_prescription_pdf(raw):  # 처방조제정보 PDF -> its own table
-        return await _save_prescriptions(user, raw, mime, chosen, filename=image.filename)
+        result = await _save_prescriptions(user, raw, mime, chosen, filename=filename)
+        result["service"] = "prescription"
+        return result
     if mime != "application/pdf" and screen_router.auto_route_enabled():
         # An image here may be a prescription screen (e.g. a PDF viewer captured instead of the file).
         if await screen_router.classify_screen(raw, mime) == "prescription":
-            return await _save_prescriptions(user, raw, mime, chosen, filename=image.filename)
+            result = await _save_prescriptions(user, raw, mime, chosen, filename=filename)
+            result["service"] = "prescription"
+            return result
     result = await _save_medical(user, raw, mime, chosen)
+    result["service"] = "medical"
     if result.get("status") == "not_found":
         # No payment rows: the document may still be a prescription list the title check missed.
-        rx = await _save_prescriptions(user, raw, mime, chosen, filename=image.filename)
+        rx = await _save_prescriptions(user, raw, mime, chosen, filename=filename)
         if rx.get("status") == "saved":
+            rx["service"] = "prescription"
             return rx
-        result["message"] += "\n" + _received_note(raw, mime, image.filename)
+        result["message"] += "\n" + _received_note(raw, mime, filename)
     return result
 
 

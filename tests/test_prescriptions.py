@@ -139,3 +139,24 @@ def test_not_found_reports_what_was_received(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(prescriptions, "parse_prescription_pdf", lambda raw: ([], []))
     res = client.post("/api/ingest/medical", files={"image": ("a.pdf", PDF, "application/pdf")}, headers=AUTH).json()
     assert res["status"] == "not_found" and "(받은 파일: PDF · 1KB · a.pdf · '%PDF-1.7')" in res["message"]
+
+
+def test_pdf_shared_to_the_single_pick3_shortcut_is_handled_as_a_medical_document(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The one "Pick3" Shortcut posts everything to /api/ingest/screenshot; a PDF must not go to restaurants.
+    seen = _fake(monkeypatch, {"patient": "", "records": []}, rows=[])
+    monkeypatch.setattr(prescriptions, "is_prescription_pdf", lambda raw: True)
+    monkeypatch.setattr(prescriptions, "parse_prescription_pdf", lambda raw: (list(ROWS), []))
+    res = client.post("/api/ingest/screenshot", files={"image": ("김예시 약처방.pdf", PDF, "application/pdf")},
+                      headers=AUTH).json()
+    assert res["status"] == "saved" and res["service"] == "prescription" and res["patient"] == "김예시"
+    assert seen["posts"][0][0].endswith("/pick3_prescriptions")
+    assert seen["gemini"] == []  # no screen classification for PDFs
+
+
+def test_payment_pdf_to_single_shortcut_saves_medical_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    from test_medical import SCREEN
+    seen = _fake(monkeypatch, SCREEN)
+    res = client.post("/api/ingest/screenshot", files={"image": ("영수증.pdf", PDF, "application/pdf")},
+                      headers=AUTH).json()
+    assert res["service"] == "medical" and res["message"].startswith("🧾 의료비 기록\n")
+    assert seen["posts"][0][0].endswith("/pick3_medical_records")

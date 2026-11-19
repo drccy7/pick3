@@ -1,5 +1,5 @@
 import json, sys, urllib.request
-for src, title in (("medical", "Pick3 PDF"), ("pick3", "Pick3 Save")):
+for src, title in (("pick3", "Pick3"),):
     xml = open(f"{src}_patched.plist", encoding="utf-8").read()
     req = urllib.request.Request("https://hubsign.routinehub.services/sign",
         data=json.dumps({"shortcutName": title, "shortcut": xml}).encode(),
