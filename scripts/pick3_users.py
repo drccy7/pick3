@@ -92,7 +92,8 @@ def main() -> None:
                                   json={"token_hash": hash_token(token)}))
             if not rows:
                 sys.exit(f"id={args.id} 사용자가 없습니다.")
-            _check(c.delete(f"{rest}/pick3_sessions", headers=headers, params={"user_id": f"eq.{args.id}"}))
+            # end web sessions too (ignored if migration 005 has not created the table yet)
+            c.delete(f"{rest}/pick3_sessions", headers=headers, params={"user_id": f"eq.{args.id}"})
             _print_token(rows[0]["name"], token)
         elif args.cmd == "reset-pin":
             rows = _check(c.patch(users, headers=headers, params={"id": f"eq.{args.id}"},
