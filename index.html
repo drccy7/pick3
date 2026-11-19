@@ -44,6 +44,25 @@
       font: inherit; font-size: 13px; color: var(--text); background: transparent; white-space: nowrap;
       border: 1px solid var(--border); border-radius: 999px; padding: 7px 12px;
     }
+    .panel {
+      margin-top: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 14px;
+    }
+    .panel h2 { font-size: 15px; font-weight: 700; }
+    .panel p { color: var(--muted); font-size: 13px; margin-top: 4px; }
+    .panel input {
+      display: block; width: 100%; margin-top: 10px; padding: 11px 12px; font: inherit; font-size: 16px;
+      color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+    }
+    .panel .row { display: flex; gap: 8px; margin-top: 12px; align-items: center; flex-wrap: wrap; }
+    .btn {
+      font: inherit; font-size: 15px; font-weight: 700; color: #fff; background: var(--accent);
+      border: 0; border-radius: 10px; padding: 10px 16px;
+    }
+    .btn:disabled { opacity: 0.6; }
+    .link { font: inherit; font-size: 13px; color: var(--muted); background: none; border: 0; text-decoration: underline; padding: 4px; }
+    .err { color: #ff8a8a; font-size: 13px; margin-top: 8px; min-height: 1em; }
+    .ok { color: #7ee2a8; }
+    [hidden] { display: none !important; }
     .foot { margin-top: 24px; color: var(--muted); font-size: 12px; }
     .foot a { color: var(--muted); }
     @media (max-width: 340px) { .grid { grid-template-columns: 1fr; } }
@@ -58,6 +77,32 @@
     <div><div class="k">이 기기의 계정</div><div class="v" id="acctName">확인 중…</div></div>
     <button type="button" id="switchBtn">계정 바꾸기</button>
   </div>
+
+  <form class="panel" id="loginPanel" hidden autocomplete="on">
+    <h2>이름과 PIN으로 들어가기</h2>
+    <p>PIN은 개인 링크로 들어간 기기에서 한 번 만들어 두면 됩니다.</p>
+    <input id="loginName" name="username" autocomplete="username" placeholder="이름 (예: 홍길동)" required />
+    <input id="loginPin" name="password" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6"
+           autocomplete="current-password" placeholder="PIN 숫자 6자리" required />
+    <div class="row">
+      <button class="btn" type="submit" id="loginBtn">들어가기</button>
+      <button class="link" type="button" id="tokenBtn">개인 링크·토큰으로</button>
+      <button class="link" type="button" id="loginCancel" hidden>닫기</button>
+    </div>
+    <div class="err" id="loginErr" role="alert"></div>
+  </form>
+
+  <form class="panel" id="pinPanel" hidden>
+    <h2 id="pinTitle">PIN 만들기</h2>
+    <p>다른 브라우저(카톡 안 브라우저, PC 등)에서는 긴 링크 대신 이름과 PIN으로 들어올 수 있습니다.</p>
+    <input id="pin1" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="new-password" placeholder="새 PIN 숫자 6자리" />
+    <input id="pin2" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="new-password" placeholder="한 번 더" />
+    <div class="row">
+      <button class="btn" type="submit" id="pinBtn">저장</button>
+      <button class="link" type="button" id="pinLater">나중에</button>
+    </div>
+    <div class="err" id="pinErr" role="alert"></div>
+  </form>
 
   <nav class="grid" id="grid" aria-label="서비스"></nav>
 
@@ -80,28 +125,94 @@
         <span class="desc">${esc(s.desc)}</span>
       </a>`).join("");
 
+    const $ = (id) => document.getElementById(id);
+    const PIN_LATER = "pick3_pin_later";
+
+    function showLogin(open, canCancel) {
+      $("loginPanel").hidden = !open;
+      $("loginCancel").hidden = !canCancel;
+      $("loginErr").textContent = "";
+      if (open) { $("pinPanel").hidden = true; }
+    }
+
+    async function offerPin() {
+      const has = await Pick3Account.hasPin();
+      if (has === undefined) return;            // server asleep / migration not run: say nothing
+      $("pinTitle").textContent = has ? "PIN 바꾸기" : "PIN 만들기";
+      const later = (() => { try { return localStorage.getItem(PIN_LATER); } catch { return ""; } })();
+      $("pinPanel").hidden = has || !!later;
+      $("foot").innerHTML = '<button class="link" type="button" id="pinOpen">' + (has ? "PIN 바꾸기" : "PIN 만들기") +
+        '</button> · <button class="link" type="button" id="logoutBtn">이 기기에서 로그아웃</button>';
+      $("pinOpen").onclick = () => { $("pinPanel").hidden = false; $("pin1").focus(); };
+      $("logoutBtn").onclick = () => {
+        if (!confirm("이 기기에서 로그아웃할까요? (단축어 저장은 그대로 됩니다)")) return;
+        Pick3Account.signOut();
+        showAccount();
+      };
+    }
+
     async function showAccount() {
-      const el = document.getElementById("acctName");
-      const foot = document.getElementById("foot");
+      const el = $("acctName");
+      const foot = $("foot");
+      $("pinPanel").hidden = true;
       if (!Pick3Account.getToken()) {
         el.textContent = "없음";
-        foot.innerHTML = '받은 개인 시작 링크를 먼저 열어 주세요. <a href="start.html">시작 안내</a>';
+        foot.innerHTML = '처음이면 받은 개인 시작 링크를 여세요. <a href="start.html">시작 안내</a>';
+        showLogin(true, false);
         return;
       }
+      showLogin(false);
       el.textContent = Pick3Account.cachedName() ? `${Pick3Account.cachedName()} 님` : "확인 중…";
       foot.textContent = "";
       const n = await Pick3Account.name();
       if (n === null) {
-        el.textContent = "토큰이 맞지 않음";
-        foot.textContent = "'계정 바꾸기'로 본인 개인 링크나 토큰을 넣어 주세요.";
+        el.textContent = "로그인 필요";
+        Pick3Account.signOut();
+        showLogin(true, false);
+        $("loginErr").textContent = "로그인이 끝났거나 토큰이 맞지 않습니다. 다시 들어가 주세요.";
       } else {
         el.textContent = n ? `${n} 님` : "확인 못 함 (서버 깨우는 중)";
+        if (n) offerPin();
       }
     }
 
-    document.getElementById("switchBtn").addEventListener("click", async () => {
+    $("loginPanel").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const name = $("loginName").value.trim(), pin = $("loginPin").value.trim();
+      $("loginBtn").disabled = true;
+      $("loginErr").textContent = "확인 중…";
+      const err = await Pick3Account.loginWithPin(name, pin);
+      $("loginBtn").disabled = false;
+      $("loginErr").textContent = err;
+      if (!err) { $("loginPin").value = ""; showAccount(); }
+    });
+    $("tokenBtn").addEventListener("click", async () => {
       const n = await Pick3Account.switchInteractive();
       if (n) showAccount();
+    });
+    $("loginCancel").addEventListener("click", () => showLogin(false));
+
+    $("pinPanel").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const a = $("pin1").value.trim(), b = $("pin2").value.trim();
+      if (a !== b) { $("pinErr").textContent = "두 PIN이 다릅니다."; return; }
+      $("pinBtn").disabled = true;
+      const err = await Pick3Account.setPin(a);
+      $("pinBtn").disabled = false;
+      if (err) { $("pinErr").textContent = err; return; }
+      $("pin1").value = $("pin2").value = "";
+      $("pinErr").innerHTML = '<span class="ok">PIN을 저장했습니다. 이름과 이 PIN으로 다른 브라우저에서 들어오세요.</span>';
+      setTimeout(() => { $("pinPanel").hidden = true; $("pinErr").textContent = ""; offerPin(); }, 2500);
+    });
+    $("pinLater").addEventListener("click", () => {
+      try { localStorage.setItem(PIN_LATER, "1"); } catch {}
+      $("pinPanel").hidden = true;
+    });
+
+    $("switchBtn").addEventListener("click", () => {
+      const open = $("loginPanel").hidden;
+      showLogin(open, true);
+      if (open) $("loginName").focus();
     });
 
     Pick3Account.ready.then(showAccount);

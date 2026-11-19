@@ -40,7 +40,7 @@ from pydantic import BaseModel, field_validator
 try:
     from .providers import ProviderType, SituationType, get_kakao_diag, get_recommendations
     from .reels_script import build_reels_script
-    from . import medical, prescriptions, screen_router
+    from . import auth_pin, medical, prescriptions, screen_router
     from .saved_places import (
         StorageError,
         bump_usage,
@@ -57,6 +57,7 @@ try:
 except ImportError:
     from providers import ProviderType, SituationType, get_kakao_diag, get_recommendations
     from reels_script import build_reels_script
+    import auth_pin
     import medical
     import prescriptions
     import screen_router
@@ -328,7 +329,67 @@ async def _save_restaurant(user: dict, raw: bytes, mime: str) -> dict:
 async def me(x_pick3_token: Optional[str] = Header(default=None)) -> dict:
     """Lets the web app check a pasted token and greet the user."""
     user = await _current_user(x_pick3_token)
-    return {"name": user["name"], "auth_mode": _auth_mode()}
+    out = {"name": user["name"], "auth_mode": _auth_mode()}
+    if user.get("id") is not None:
+        try:
+            out["has_pin"] = await auth_pin.has_pin(user["id"])
+        except StorageError:
+            pass  # PIN columns missing (migration 005 not run yet) - sign-in still works
+    return out
+
+
+class PinSet(BaseModel):
+    pin: str
+
+
+@app.post("/api/pin")
+async def set_pin(body: PinSet, x_pick3_token: Optional[str] = Header(default=None)) -> dict:
+    """A signed-in user creates or changes their own 6-digit PIN."""
+    user = await _current_user(x_pick3_token)
+    if user.get("id") is None:
+        raise HTTPException(status_code=400, detail="PIN 로그인은 서버 저장소(Supabase)에서만 됩니다.")
+    try:
+        await auth_pin.set_pin(user["id"], body.pin)
+    except auth_pin.PinError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except StorageError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"status": "ok", "message": "PIN을 저장했습니다. 다른 브라우저에서는 이름과 PIN으로 들어오세요."}
+
+
+class PinLogin(BaseModel):
+    name: str
+    pin: str
+
+
+def _client_ip(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for", "")
+    return fwd.split(",")[0].strip() or (request.client.host if request.client else "?")
+
+
+@app.post("/api/login")
+async def login(body: PinLogin, request: Request) -> dict:
+    """Name + PIN -> a web session token (sent as X-Pick3-Token like a personal token)."""
+    if not supabase_configured():
+        raise HTTPException(status_code=400, detail="PIN 로그인은 서버 저장소(Supabase)에서만 됩니다.")
+    try:
+        return await auth_pin.login(body.name, body.pin, _client_ip(request))
+    except auth_pin.PinError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except StorageError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/api/logout")
+async def logout(x_pick3_token: Optional[str] = Header(default=None)) -> dict:
+    """Ends a name+PIN web session. Personal tokens (Shortcuts) are not affected."""
+    token = (x_pick3_token or "").strip()
+    if token.startswith(auth_pin.SESSION_PREFIX) and supabase_configured():
+        try:
+            await auth_pin.logout(token)
+        except StorageError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"status": "ok"}
 
 
 @app.get("/api/saved")

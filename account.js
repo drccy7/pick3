@@ -95,7 +95,48 @@
       write(NAME_KEY, n || "");
       return n || "새 계정";
     },
-    signOut() { write(KEY, ""); write(NAME_KEY, ""); },
+    // Does the signed-in user already have a PIN? (true/false, or undefined if unknown)
+    async hasPin() {
+      const token = read(KEY);
+      if (!token) return undefined;
+      try {
+        const res = await fetch(`${API}/api/me`, { headers: { "X-Pick3-Token": token } });
+        return res.ok ? (await res.json()).has_pin : undefined;
+      } catch { return undefined; }
+    },
+    // Create/change the PIN of the signed-in user. Returns "" on success, else an error message.
+    async setPin(pin) {
+      const res = await fetch(`${API}/api/pin`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Pick3-Token": read(KEY) },
+        body: JSON.stringify({ pin }),
+      }).catch(() => null);
+      if (!res) return "서버에 연결하지 못했습니다. 잠시 후 다시 해 주세요.";
+      if (res.ok) return "";
+      const d = await res.json().catch(() => ({}));
+      return typeof d.detail === "string" ? d.detail : "PIN을 저장하지 못했습니다.";
+    },
+    // Name + PIN sign-in. Returns "" on success (token stored), else an error message.
+    async loginWithPin(name, pin) {
+      const res = await fetch(`${API}/api/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, pin }),
+      }).catch(() => null);
+      if (!res) return "서버에 연결하지 못했습니다. 서버가 깨어나는 중이면 30초 뒤 다시 해 주세요.";
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) return typeof d.detail === "string" ? d.detail : "로그인하지 못했습니다.";
+      write(KEY, d.token);
+      write(NAME_KEY, d.name || "");
+      return "";
+    },
+    signOut() {
+      const token = read(KEY);
+      if (token.startsWith("p3s_")) {
+        fetch(`${API}/api/logout`, { method: "POST", headers: { "X-Pick3-Token": token } }).catch(() => {});
+      }
+      write(KEY, ""); write(NAME_KEY, "");
+    },
     forget401() { write(NAME_KEY, ""); },
   };
 })();

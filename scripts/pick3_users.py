@@ -6,6 +6,8 @@
   python scripts/pick3_users.py rotate <id>                 # new token, old one stops working
   python scripts/pick3_users.py disable <id> | enable <id>
   python scripts/pick3_users.py claim-orphans <id>          # give saved rows without user_id to <id>
+  python scripts/pick3_users.py reset-pin <id>              # forget the PIN + unlock (user makes a new one)
+  python scripts/pick3_users.py logout-all <id>             # end every name+PIN web session of <id>
 
 Only a SHA-256 hash of each token is stored, so a lost token cannot be shown again: rotate it.
 """
@@ -61,7 +63,7 @@ def main() -> None:
     a.add_argument("--limit", type=int, default=None, help="하루 저장 한도 (기본: 서버 설정)")
     a.add_argument("--token-env", default=None, help="새로 만들지 않고 이 환경변수의 기존 토큰을 등록")
     sub.add_parser("list")
-    for cmd in ("rotate", "disable", "enable", "claim-orphans"):
+    for cmd in ("rotate", "disable", "enable", "claim-orphans", "reset-pin", "logout-all"):
         sub.add_parser(cmd).add_argument("id", type=int)
     args = ap.parse_args()
 
@@ -79,17 +81,26 @@ def main() -> None:
                 _print_token(row["name"], token)
         elif args.cmd == "list":
             rows = _check(c.get(users, headers=headers, params={
-                "select": "id,name,daily_limit,disabled,created_at", "order": "id"}))
+                "select": "id,name,daily_limit,disabled,created_at,pin_hash", "order": "id"}))
             for r in rows:
                 state = "사용 중지" if r["disabled"] else "사용 중"
-                print(f"{r['id']:>3}  {r['name']:<12} 한도={r['daily_limit'] or '기본'}  {state}  {r['created_at'][:10]}")
+                pin = "PIN 있음" if r.get("pin_hash") else "PIN 없음"
+                print(f"{r['id']:>3}  {r['name']:<12} 한도={r['daily_limit'] or '기본'}  {state}  {pin}  {r['created_at'][:10]}")
         elif args.cmd == "rotate":
             token = new_token()
             rows = _check(c.patch(users, headers=headers, params={"id": f"eq.{args.id}"},
                                   json={"token_hash": hash_token(token)}))
             if not rows:
                 sys.exit(f"id={args.id} 사용자가 없습니다.")
+            _check(c.delete(f"{rest}/pick3_sessions", headers=headers, params={"user_id": f"eq.{args.id}"}))
             _print_token(rows[0]["name"], token)
+        elif args.cmd == "reset-pin":
+            rows = _check(c.patch(users, headers=headers, params={"id": f"eq.{args.id}"},
+                                  json={"pin_hash": None, "pin_failed": 0, "pin_locked_until": None}))
+            print(f"{rows[0]['name']}: PIN 초기화됨 (개인 링크로 들어가 홈에서 새로 만드세요)" if rows else "없음")
+        elif args.cmd == "logout-all":
+            rows = _check(c.delete(f"{rest}/pick3_sessions", headers=headers, params={"user_id": f"eq.{args.id}"}))
+            print(f"웹 로그인 {len(rows)}건을 끝냈습니다.")
         elif args.cmd in ("disable", "enable"):
             rows = _check(c.patch(users, headers=headers, params={"id": f"eq.{args.id}"},
                                   json={"disabled": args.cmd == "disable"}))

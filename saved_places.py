@@ -293,9 +293,27 @@ async def find_user_by_token(token: str) -> dict | None:
     if resp.status_code != 200:
         raise StorageError(f"Supabase users HTTP {resp.status_code}: {resp.text[:200]}")
     rows = resp.json()
+    if not rows and token.strip().startswith("p3s_"):
+        rows = await _user_by_session(h, base_url, headers)
     user = rows[0] if rows and not rows[0].get("disabled") else None
-    _USER_CACHE[h] = (now + (_USER_CACHE_TTL if user else _USER_MISS_TTL), user)
+    _USER_CACHE[h] =(now + (_USER_CACHE_TTL if user else _USER_MISS_TTL), user)
     return user
+
+
+async def _user_by_session(h: str, base_url: str, headers: dict[str, str]) -> list[dict]:
+    """Web sign-in (name + PIN) sessions: pick3_sessions.token_hash -> its user."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(
+                f"{base_url}/rest/v1/pick3_sessions",
+                headers=headers,
+                params={"select": "user:pick3_users(id,name,daily_limit,disabled)", "token_hash": f"eq.{h}", "limit": "1"},
+            )
+    except Exception as exc:
+        raise StorageError(f"Supabase 연결 실패: {type(exc).__name__}: {exc}") from exc
+    if resp.status_code != 200:
+        raise StorageError(f"Supabase sessions HTTP {resp.status_code}: {resp.text[:200]}")
+    return [r["user"] for r in resp.json() if r.get("user")]
 
 
 # ---- daily usage (Gemini cost guard) ---------------------------------------
