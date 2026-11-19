@@ -11,7 +11,9 @@ for name in sys.argv[1:]:
             if item["WFKey"]["Value"]["string"] == "image":
                 att = item["WFValue"]["Value"]["attachmentsByRange"]["{0, 1}"]
                 item["WFItemType"] = 5
-                item["WFValue"] = {"Value": att, "WFSerializationType": "WFTokenAttachmentParameterState"}
+                # Same shape the Shortcuts app writes for a "파일" form field (checked against a real export).
+                item["WFValue"] = {"Value": {"Value": att, "WFSerializationType": "WFTextTokenAttachment"},
+                                   "WFSerializationType": "WFTokenAttachmentParameterState"}
                 n += 1
         for item in a["WFWorkflowActionParameters"]["WFHTTPHeaders"]["Value"]["WFDictionaryFieldValueItems"]:
             item["WFItemType"] = 0
