@@ -311,3 +311,11 @@ def test_upload_without_file_field_explains_in_message() -> None:
     assert res.status_code == 422 and "파일(image)" in body["message"] and body["detail"]
     plain = client.post("/api/recommend", json={})  # other endpoints keep FastAPI's default shape
     assert "message" not in plain.json()
+
+
+def test_shared_link_gets_guidance_without_gemini_or_usage(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _fake(monkeypatch, SCREEN)
+    res = client.post("/api/ingest/screenshot", headers=AUTH,
+                      files={"image": ("text.txt", b"https://example.com/result?t=abc", "text/plain")}).json()
+    assert res["status"] == "unsupported" and "전체 페이지" in res["message"]
+    assert seen["gemini"] == [] and not any("bump_usage" in u for u, _ in seen["posts"])

@@ -29,6 +29,7 @@ def _load_local_env(path: Path) -> None:
 
 _load_local_env(Path(__file__).resolve().parent / ".env")
 
+import re
 import secrets
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
@@ -299,6 +300,9 @@ async def ingest_screenshot(
         raise HTTPException(status_code=400, detail="Empty image upload")
     if len(raw) > medical.MAX_UPLOAD_BYTES:
         return {"status": "error", "message": "❌ 파일이 너무 큽니다(15MB 초과). 쪽을 나눠 보내 주세요."}
+    text_note = _text_upload_note(raw, image.content_type)
+    if text_note:  # a link or plain text (e.g. shared from a browser), not an image/PDF: no Gemini, no usage
+        return {"status": "unsupported", "service": "none", "message": text_note}
     if not os.getenv("GEMINI_API_KEY", "").strip():
         return {"status": "error", "message": "❌ 서버에 GEMINI_API_KEY가 설정되지 않아 화면을 분석할 수 없습니다."}
     try:
@@ -334,7 +338,32 @@ async def ingest_screenshot(
     result["service"] = "restaurant"
     if result["status"] == "saved":
         result["message"] = "🍽️ 맛집\n" + result["message"]
+    elif result["status"] == "not_found":
+        result["message"] = ("화면에서 맛집·의료비·처방 내용을 찾지 못했습니다. "
+                             "상호나 결제 내역이 보이는 화면에서 다시 시도해 주세요.")
     return result
+
+
+_KNOWN_MAGIC = (b"%PDF-", b"\x89PNG", b"\xff\xd8\xff", b"RIFF")
+
+
+def _text_upload_note(raw: bytes, declared: str | None = None) -> str:
+    """If the upload is text (a shared link or copied words) rather than an image/PDF, say what to do."""
+    if raw.startswith(_KNOWN_MAGIC) or raw[4:8] == b"ftyp" or len(raw) > 20000:
+        return ""
+    try:
+        text = raw.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        return ""
+    if not text or "\x00" in text:
+        return ""
+    is_link = bool(re.match(r"https?://\S+$", text))
+    if not is_link and not (declared or "").startswith("text/"):
+        return ""
+    if is_link:
+        return ("🔗 링크를 받았습니다. 링크만으로는 페이지 내용을 읽을 수 없습니다(내용이 휴대폰에서 나중에 채워지는 페이지).\n"
+                "그 페이지를 Safari에서 열고 스크린샷 → 썸네일 → 위쪽 [전체 페이지] → 공유 → Pick3 으로 보내 주세요(PDF로 저장됨).")
+    return "글자만 받았습니다. 화면 캡처나 PDF를 공유해 주세요."
 
 
 async def _save_restaurant(user: dict, raw: bytes, mime: str) -> dict:
