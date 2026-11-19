@@ -52,23 +52,23 @@
   <p class="sub" id="greet">단축어마다 버튼 두 개 [설치] → [연결]이면 끝납니다. 붙여넣기는 없습니다.</p>
 
   <section class="step">
-    <h2>🍽️ Pick3 맛집 <small style="color:var(--muted);font-weight:400">맛집·의료비 화면 자동 구분</small></h2>
+    <h2>📸 Pick3 Save <small style="color:var(--muted);font-weight:400">맛집·의료비 화면 자동 구분</small></h2>
     <p>캡처 화면을 공유하거나 뒷면 탭으로 저장합니다. 대부분은 이것 하나면 됩니다.</p>
-    <a class="btn" href="shortcuts/Pick3%20%EB%A7%9B%EC%A7%91.shortcut">① 설치</a>
-    <button class="btn connect secondary" type="button" data-name="Pick3 맛집">② 내 계정 연결</button>
+    <a class="btn" href="shortcuts/Pick3%20Save.shortcut">① 설치</a>
+    <button class="btn connect secondary" type="button" data-name="Pick3 Save">② 내 계정 연결</button>
   </section>
 
   <section class="step">
-    <h2>🧾 Pick3 의료비 <small style="color:var(--muted);font-weight:400">PDF·파일용</small></h2>
+    <h2>📄 Pick3 PDF <small style="color:var(--muted);font-weight:400">PDF·파일용</small></h2>
     <p>처방조제정보·진료비 PDF를 카톡이나 파일 앱에서 공유해 저장합니다.</p>
-    <a class="btn" href="shortcuts/Pick3%20%EC%9D%98%EB%A3%8C%EB%B9%84.shortcut">① 설치</a>
-    <button class="btn connect secondary" type="button" data-name="Pick3 의료비">② 내 계정 연결</button>
+    <a class="btn" href="shortcuts/Pick3%20PDF.shortcut">① 설치</a>
+    <button class="btn connect secondary" type="button" data-name="Pick3 PDF">② 내 계정 연결</button>
   </section>
 
   <p class="sub">① 설치: 단축어 앱이 열리면 <b>[단축어 추가]</b>. 안 열리면 파일 앱 → 다운로드에서 파일을 누르세요.<br>
     ② 연결: 단축어 앱에서 "✅ 연결 완료"가 뜨면 끝. 파일 접근을 물으면 <b>허용</b>. 한 번 연결하면 두 단축어 모두 됩니다.<br>
-    예전 단축어(Pick3 저장·의료비 저장)는 지워도 됩니다.</p>
-  <p class="done" id="connectNote">"단축어를 찾을 수 없음"이 뜨면: 먼저 ① 설치. 설치했는데도 뜨면 단축어 앱에서 그 단축어 이름을 지우고 똑같이 다시 입력한 뒤 다시 누르세요.</p>
+    예전 단축어(Pick3 저장·의료비 저장·Pick3 맛집·Pick3 의료비)는 지워도 됩니다.</p>
+  <p class="done" id="connectNote">"단축어를 찾을 수 없음"이 뜨면 먼저 ① 설치를 해 주세요. 이름 뒤에 숫자(예: Pick3 Save 1)가 붙었다면 숫자를 지우세요.</p>
 
   <section class="step">
     <h2>📒 Pick3 열기</h2>
@@ -80,11 +80,11 @@
     <b>사용법</b>
     <ol>
       <li>인스타 게시물에서 캡션 '더 보기'를 펼치고 캡처</li>
-      <li>왼쪽 아래 썸네일 → 공유 → <b>Pick3 맛집</b> (맛집·의료비 결제 내역 화면은 자동으로 나뉘어 저장)</li>
-      <li>처방조제정보·진료비 <b>PDF</b>: 카톡에서 파일을 열고 공유 → <b>Pick3 의료비</b></li>
+      <li>왼쪽 아래 썸네일 → 공유 → <b>Pick3 Save</b> (맛집·의료비 결제 내역 화면은 자동으로 나뉘어 저장)</li>
+      <li>처방조제정보·진료비 <b>PDF</b>: 카톡에서 파일을 열고 공유 → <b>Pick3 PDF</b></li>
       <li>처음 '연결 허용'이 뜨면 <b>항상 허용</b>. 첫 저장은 30~50초 걸릴 수 있어요</li>
     </ol>
-    <p style="margin-top:10px">더 빠르게: 설정 → 손쉬운 사용 → 터치 → 뒷면 탭 → 이중 탭 → Pick3 맛집. 그러면 뒷면을 톡톡 두 번 두드리는 것으로 끝납니다.</p>
+    <p style="margin-top:10px">더 빠르게: 설정 → 손쉬운 사용 → 터치 → 뒷면 탭 → 이중 탭 → Pick3 Save. 그러면 뒷면을 톡톡 두 번 두드리는 것으로 끝납니다.</p>
   </div>
 
   <script src="account.js"></script>
@@ -113,9 +113,9 @@
         return;
       }
       document.getElementById("connectNote").style.display = "block";
-      // A Shortcut imported from a .shortcut file keeps its Hangul name decomposed (NFD), so a
-      // composed (NFC) name from this page is "not found". Retyping the name makes it NFC again.
-      location.href = "shortcuts://run-shortcut?name=" + encodeURIComponent(btn.dataset.name.normalize("NFD")) +
+      // Shortcut names are ASCII on purpose: imported Hangul names are stored decomposed (NFD)
+      // and run-shortcut?name= then fails to find them.
+      location.href = "shortcuts://run-shortcut?name=" + encodeURIComponent(btn.dataset.name) +
         "&input=text&text=" + encodeURIComponent(myToken);
     });
   </script>
