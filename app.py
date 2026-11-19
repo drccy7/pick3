@@ -33,7 +33,7 @@ import secrets
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 
@@ -241,6 +241,33 @@ async def _current_user(supplied: str | None) -> dict:
     return {"id": None, "name": "local", "daily_limit": None}
 
 
+class _IngestAuthError(Exception):
+    """401 for the Shortcut: also carries a readable `message` (Shortcuts shows only that)."""
+
+    def __init__(self, status_code: int, detail: str, message: str) -> None:
+        self.status_code, self.detail, self.message = status_code, detail, message
+
+
+@app.exception_handler(_IngestAuthError)
+async def _ingest_auth_error(_request: Request, exc: _IngestAuthError) -> JSONResponse:
+    return JSONResponse(status_code=exc.status_code,
+                        content={"status": "error", "detail": exc.detail, "message": exc.message})
+
+
+async def _ingest_user(supplied: str | None) -> dict:
+    """_current_user for Shortcut uploads: on failure say what token shape arrived (never the token)."""
+    try:
+        return await _current_user(supplied)
+    except HTTPException as exc:
+        token = (supplied or "").strip()
+        if exc.status_code != 401:
+            raise _IngestAuthError(exc.status_code, str(exc.detail), f"❌ 서버 문제: {exc.detail}") from exc
+        shape = f"{len(token)}자, '{token[:4]}…'로 시작" if token else "비어 있음"
+        message = ("❌ 계정 토큰이 맞지 않습니다. 시작 페이지에서 [② 내 계정 연결]을 다시 눌러 주세요."
+                   f"\n(받은 토큰: {shape})")
+        raise _IngestAuthError(401, str(exc.detail), message) from exc
+
+
 def _daily_limits(user: dict) -> tuple[int, int]:
     per_user = user.get("daily_limit") or int(os.getenv("PICK3_DAILY_LIMIT_PER_USER", "30"))
     total = int(os.getenv("PICK3_DAILY_LIMIT_TOTAL", "300"))
@@ -252,7 +279,7 @@ async def ingest_screenshot(
     image: UploadFile = File(...),
     x_pick3_token: Optional[str] = Header(default=None),
 ) -> dict:
-    user = await _current_user(x_pick3_token)
+    user = await _ingest_user(x_pick3_token)
     raw = await image.read()
     if not raw:
         raise HTTPException(status_code=400, detail="Empty image upload")
@@ -443,7 +470,7 @@ async def ingest_medical(
     planner saving a customer's records under their own token. It wins over the name on screen.
     """
     chosen = (patient or "").strip()[:40]
-    user = await _current_user(x_pick3_token)
+    user = await _ingest_user(x_pick3_token)
     raw = await image.read()
     if not raw:
         raise HTTPException(status_code=400, detail="Empty upload")

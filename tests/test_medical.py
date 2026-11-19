@@ -293,3 +293,13 @@ def test_auto_route_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     res = client.post("/api/ingest/screenshot", files={"image": ("s.jpg", b"\xff\xd8\xff" + b"0" * 20, "image/jpeg")},
                       headers=AUTH).json()
     assert res["service"] == "restaurant" and len(seen["gemini"]) == 1  # no classification call
+
+
+def test_shortcut_upload_with_bad_token_gets_a_readable_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake(monkeypatch, SCREEN)
+    res = client.post("/api/ingest/screenshot", files={"image": ("s.png", PNG, "image/png")},
+                      headers={"X-Pick3-Token": "pick3_token.txt"})
+    body = res.json()
+    assert res.status_code == 401 and body["detail"] == "Invalid or missing X-Pick3-Token"
+    assert "내 계정 연결" in body["message"] and "15자, 'pick…'로 시작" in body["message"]
+    assert "token.txt" not in body["message"]  # never echo the token itself
