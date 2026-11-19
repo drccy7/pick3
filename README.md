@@ -88,10 +88,21 @@ pytest tests -q        # 전체 (맛집·의료비·처방·PIN)
 | `PICK3_GEMINI_MODEL` | 선택. 기본 `gemini-3.5-flash-lite`. 인식이 약하면 `gemini-3.8-flash` |
 | `KAKAO_REST_API_KEY` | 가게 확인·좌표 |
 | `PICK3_DAILY_LIMIT_PER_USER`, `PICK3_DAILY_LIMIT_TOTAL` | 선택. 하루 분석 한도 (기본 30 / 300) |
+| `PICK3_RENDER_DOMAINS` | 링크로 저장할 때 서버 브라우저가 열 수 있는 사이트(예: `myhom.me`) |
+| `PLAYWRIGHT_BROWSERS_PATH` | `0` (Chromium을 venv 안에 설치) |
 | `PICK3_INGEST_TOKEN` | Supabase 없이 로컬에서만 쓰는 공용 토큰. 운영(Supabase)에서는 쓰지 않음 |
 
 > Render 서비스는 Auto-Deploy가 꺼져 있습니다. push 후 **Manual Deploy → Deploy latest commit**. 환경변수만 바꿀 때는 "Save only" 후 배포.
 > 확인: `GET /api/health` → `storage_ok`, `gemini_key_configured`가 `true`, `auth_mode`가 `per_user`.
+
+### 링크로 저장 (서버 브라우저)
+
+알림톡 버튼으로 열리는 결과 페이지처럼 **내용이 JavaScript로 나중에 채워지는 페이지**는 링크를 `Pick3`으로 공유하면 서버가 휴대폰 브라우저처럼 열어(`link_render.py`, Playwright/Chromium, Apache-2.0) PDF로 만든 뒤 의료 문서로 처리합니다.
+
+- 열 수 있는 사이트: 환경변수 `PICK3_RENDER_DOMAINS`(쉼표 구분, 하위 도메인 포함)만. `https`만, 공인 IP로만 연결(SSRF 방지), 리디렉션도 허용 사이트 안에서만
+- 메모리 절약: 한 번에 한 페이지, 이미지·글꼴·동영상 차단, 링크마다 브라우저를 켜고 바로 끔(512MB 인스턴스 기준, 부족하면 플랜 상향)
+- 목록에 없는 사이트의 링크는 분석 없이 "Safari [전체 페이지] PDF로 보내기" 안내만 돌려줌(사용 횟수 차감 없음)
+- Render 설정(지금 Python 서비스 그대로): Build Command `pip install -r requirements.txt && python -m playwright install chromium-headless-shell`, 환경변수 `PLAYWRIGHT_BROWSERS_PATH=0`, `PICK3_RENDER_DOMAINS=myhom.me`. 시스템 라이브러리가 없어 브라우저가 안 뜨면 `Dockerfile`(Playwright 공식 이미지)로 새 서비스를 만들어야 함(주소가 바뀌므로 단축어도 다시 만들어야 함)
 
 ### 사용 요령과 결과 문구
 

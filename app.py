@@ -31,6 +31,7 @@ _load_local_env(Path(__file__).resolve().parent / ".env")
 
 import re
 import secrets
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -43,7 +44,7 @@ from pydantic import BaseModel, field_validator
 try:
     from .providers import ProviderType, SituationType, get_kakao_diag, get_recommendations
     from .reels_script import build_reels_script
-    from . import auth_pin, medical, prescriptions, screen_router
+    from . import auth_pin, link_render, medical, prescriptions, screen_router
     from .saved_places import (
         StorageError,
         bump_usage,
@@ -61,6 +62,7 @@ except ImportError:
     from providers import ProviderType, SituationType, get_kakao_diag, get_recommendations
     from reels_script import build_reels_script
     import auth_pin
+    import link_render
     import medical
     import prescriptions
     import screen_router
@@ -300,8 +302,8 @@ async def ingest_screenshot(
         raise HTTPException(status_code=400, detail="Empty image upload")
     if len(raw) > medical.MAX_UPLOAD_BYTES:
         return {"status": "error", "message": "❌ 파일이 너무 큽니다(15MB 초과). 쪽을 나눠 보내 주세요."}
-    text_note = _text_upload_note(raw, image.content_type)
-    if text_note:  # a link or plain text (e.g. shared from a browser), not an image/PDF: no Gemini, no usage
+    link, text_note = _shared_text(raw, image.content_type)
+    if text_note:  # a link we can't open, or plain text: no Gemini, no usage
         return {"status": "unsupported", "service": "none", "message": text_note}
     if not os.getenv("GEMINI_API_KEY", "").strip():
         return {"status": "error", "message": "❌ 서버에 GEMINI_API_KEY가 설정되지 않아 화면을 분석할 수 없습니다."}
@@ -314,6 +316,20 @@ async def ingest_screenshot(
         return {"status": "limited", "message": f"오늘 저장 한도({per_user_limit}건)를 넘었습니다. 내일 다시 시도해 주세요."}
     if usage["total_count"] > total_limit:
         return {"status": "limited", "message": "오늘 서비스 전체 분석 한도에 도달했습니다. 내일 다시 시도해 주세요."}
+
+    if link:  # a shared link to a supported site: render it like a phone browser, then treat as a PDF
+        try:
+            raw = await link_render.render_pdf(link)
+        except link_render.LinkError as exc:
+            return {"status": "error", "service": "none", "message": f"🔗 링크를 열지 못했습니다: {exc}"}
+        except Exception as exc:
+            return {"status": "error", "service": "none",
+                    "message": "🔗 링크를 여는 중 문제가 생겼습니다. 잠시 후 다시 시도하거나 화면을 캡처해 보내 주세요.",
+                    "detail": f"{type(exc).__name__}: {str(exc)[:200]}"}
+        result = await _save_medical_document(user, raw, "application/pdf", "", None)
+        if result["service"] == "medical":
+            result["message"] = "🧾 의료비 기록 (링크)\n" + result["message"]
+        return result
 
     # One Shortcut for every service: classify first, then use that service's own extractor.
     mime = medical.sniff_mime(raw, image.content_type or "image/jpeg")
@@ -347,23 +363,31 @@ async def ingest_screenshot(
 _KNOWN_MAGIC = (b"%PDF-", b"\x89PNG", b"\xff\xd8\xff", b"RIFF")
 
 
-def _text_upload_note(raw: bytes, declared: str | None = None) -> str:
-    """If the upload is text (a shared link or copied words) rather than an image/PDF, say what to do."""
+def _shared_text(raw: bytes, declared: str | None = None) -> tuple[str, str]:
+    """Upload that is text (a shared link or copied words) instead of an image/PDF.
+
+    Returns (link, note): a link on a PICK3_RENDER_DOMAINS site to open, or a note telling the user
+    what to send instead. ("", "") means it is not text - handle as image/PDF.
+    """
     if raw.startswith(_KNOWN_MAGIC) or raw[4:8] == b"ftyp" or len(raw) > 20000:
-        return ""
+        return "", ""
     try:
         text = raw.decode("utf-8").strip()
     except UnicodeDecodeError:
-        return ""
+        return "", ""
     if not text or "\x00" in text:
-        return ""
-    is_link = bool(re.match(r"https?://\S+$", text))
+        return "", ""
+    link = link_render.find_link(text)
+    is_link = bool(link) and len(text) < len(link) + 300  # a link, maybe with a short title around it
     if not is_link and not (declared or "").startswith("text/"):
-        return ""
+        return "", ""
     if is_link:
-        return ("🔗 링크를 받았습니다. 링크만으로는 페이지 내용을 읽을 수 없습니다(내용이 휴대폰에서 나중에 채워지는 페이지).\n"
-                "그 페이지를 Safari에서 열고 스크린샷 → 썸네일 → 위쪽 [전체 페이지] → 공유 → Pick3 으로 보내 주세요(PDF로 저장됨).")
-    return "글자만 받았습니다. 화면 캡처나 PDF를 공유해 주세요."
+        host = urlsplit(link).hostname or ""
+        if link.startswith("https://") and link_render.host_allowed(host):
+            return link, ""
+        return "", ("🔗 링크를 받았습니다. 아직 링크로 읽을 수 없는 사이트입니다" + (f"({host})" if host else "") + ".\n"
+                    "그 페이지를 Safari에서 열고 스크린샷 → 썸네일 → 위쪽 [전체 페이지] → 공유 → Pick3 으로 보내 주세요(PDF로 저장됨).")
+    return "", "글자만 받았습니다. 화면 캡처나 PDF를 공유해 주세요."
 
 
 async def _save_restaurant(user: dict, raw: bytes, mime: str) -> dict:

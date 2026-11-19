@@ -2,8 +2,9 @@ services:
   - type: web
     name: pick3-api
     runtime: python
-    plan: free
-    buildCommand: pip install -r requirements.txt
+    plan: starter
+    # PLAYWRIGHT_BROWSERS_PATH=0 keeps Chromium inside the venv so it survives from build to runtime
+    buildCommand: pip install -r requirements.txt && python -m playwright install chromium-headless-shell
     startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: KAKAO_REST_API_KEY
@@ -24,3 +25,7 @@ services:
         sync: false
       - key: PICK3_GEMINI_MODEL
         value: gemini-3.5-flash-lite
+      - key: PLAYWRIGHT_BROWSERS_PATH
+        value: "0"
+      - key: PICK3_RENDER_DOMAINS
+        value: myhom.me
