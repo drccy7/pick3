@@ -49,11 +49,11 @@ def test_ingest_link_renders_and_saves_medical_rows(monkeypatch: pytest.MonkeyPa
     seen = _fake(monkeypatch, SCREEN, rows=[{"patient": "최근이름"}])
     opened: list[str] = []
 
-    async def fake_render(url: str) -> bytes:
+    async def fake_render(url: str):
         opened.append(url)
-        return b"%PDF-1.7 rendered page"
+        return b"%PDF-1.7 rendered page", url, 900
 
-    monkeypatch.setattr(link_render, "render_pdf", fake_render)
+    monkeypatch.setattr(link_render, "render", fake_render)
     res = client.post("/api/ingest/screenshot", headers=AUTH,
                       files={"image": ("text.txt", LINK.encode(), "text/plain")}).json()
     assert opened == [LINK]
@@ -72,10 +72,10 @@ def test_ingest_link_on_unlisted_site_gets_guidance(monkeypatch: pytest.MonkeyPa
 def test_ingest_link_render_failure_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
     _fake(monkeypatch, SCREEN)
 
-    async def boom(url: str) -> bytes:
+    async def boom(url: str):
         raise link_render.LinkError("페이지에 내용이 없습니다(링크가 만료됐을 수 있음).")
 
-    monkeypatch.setattr(link_render, "render_pdf", boom)
+    monkeypatch.setattr(link_render, "render", boom)
     res = client.post("/api/ingest/screenshot", headers=AUTH,
                       files={"image": ("text.txt", LINK.encode(), "text/plain")}).json()
     assert res["status"] == "error" and "만료" in res["message"]

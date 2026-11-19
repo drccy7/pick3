@@ -67,8 +67,8 @@ def check_url(url: str) -> str:
     return url
 
 
-async def render_pdf(url: str, timeout_ms: int = 30000) -> bytes:
-    """Render `url` like a phone browser and return the page as PDF bytes."""
+async def render(url: str, timeout_ms: int = 30000) -> tuple[bytes, str, int]:
+    """Render `url` like a phone browser. Returns (pdf, final_url, visible_text_chars)."""
     check_url(url)
     from playwright.async_api import async_playwright  # heavy import, only when used
 
@@ -92,14 +92,34 @@ async def render_pdf(url: str, timeout_ms: int = 30000) -> bytes:
 
                 await page.route("**/*", _route)
                 await page.goto(url, wait_until="networkidle", timeout=timeout_ms)
-                await page.wait_for_timeout(800)  # late renders after the last request
-                text = await page.evaluate("() => document.body ? document.body.innerText : ''")
-                if len((text or "").strip()) < 30:
+                text = await _settle(page)
+                if len(text.strip()) < 30:
                     raise LinkError("페이지에 내용이 없습니다(링크가 만료됐을 수 있음).")
                 pdf = await page.pdf(width="430px", print_background=False,
                                      margin={"top": "8mm", "bottom": "8mm", "left": "4mm", "right": "4mm"})
+                final_url = page.url
             finally:
                 await browser.close()
     if len(pdf) > MAX_PDF_BYTES:
         raise LinkError("페이지가 너무 큽니다.")
+    return pdf, final_url, len(text)
+
+
+async def _settle(page, rounds: int = 12, pause_ms: int = 700) -> str:
+    """Scroll to the bottom (lazy lists) until the visible text stops growing; return that text."""
+    last = -1
+    text = ""
+    for _ in range(rounds):
+        await page.evaluate("() => window.scrollTo(0, document.body ? document.body.scrollHeight : 0)")
+        await page.wait_for_timeout(pause_ms)
+        text = await page.evaluate("() => document.body ? document.body.innerText : ''") or ""
+        if len(text) == last:
+            break
+        last = len(text)
+    await page.evaluate("() => window.scrollTo(0, 0)")
+    return text
+
+
+async def render_pdf(url: str, timeout_ms: int = 30000) -> bytes:
+    pdf, _final, _chars = await render(url, timeout_ms)
     return pdf

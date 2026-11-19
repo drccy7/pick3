@@ -319,7 +319,7 @@ async def ingest_screenshot(
 
     if link:  # a shared link to a supported site: render it like a phone browser, then treat as a PDF
         try:
-            raw = await link_render.render_pdf(link)
+            raw, final_url, text_chars = await link_render.render(link)
         except link_render.LinkError as exc:
             return {"status": "error", "service": "none", "message": f"🔗 링크를 열지 못했습니다: {exc}"}
         except Exception as exc:
@@ -329,6 +329,9 @@ async def ingest_screenshot(
         result = await _save_medical_document(user, raw, "application/pdf", "", None)
         if result["service"] == "medical":
             result["message"] = "🧾 의료비 기록 (링크)\n" + result["message"]
+        if result.get("status") != "saved":
+            final = urlsplit(final_url)
+            result["message"] += f"\n(연 페이지: {final.hostname}{final.path} · 글자 {text_chars}자)"
         return result
 
     # One Shortcut for every service: classify first, then use that service's own extractor.
