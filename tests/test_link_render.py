@@ -79,3 +79,10 @@ def test_ingest_link_render_failure_is_reported(monkeypatch: pytest.MonkeyPatch)
     res = client.post("/api/ingest/screenshot", headers=AUTH,
                       files={"image": ("text.txt", LINK.encode(), "text/plain")}).json()
     assert res["status"] == "error" and "만료" in res["message"]
+
+
+def test_downloaded_html_instead_of_link_is_explained(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _fake(monkeypatch, SCREEN)
+    html = b"<!DOCTYPE html><html><head><title>_</title></head><body><div id=app></div></body></html>"
+    res = client.post("/api/ingest/screenshot", headers=AUTH, files={"image": ("result", html, "text/html")}).json()
+    assert res["status"] == "unsupported" and "HTML" in res["message"] and seen["gemini"] == []

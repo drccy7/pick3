@@ -377,8 +377,12 @@ def _shared_text(raw: bytes, declared: str | None = None) -> tuple[str, str]:
         return "", ""
     if not text or "\x00" in text:
         return "", ""
+    if text[:200].lstrip().lower().startswith(("<!doctype html", "<html")):
+        # The Shortcut downloaded the page instead of passing the link: the JS-filled data isn't in it.
+        return "", ("🔗 링크 대신 웹페이지 원본(HTML)을 받았습니다. 이 방식으로는 내역을 읽을 수 없습니다.\n"
+                    "Safari에서 열고 스크린샷 → [전체 페이지] → 공유 → Pick3 으로 보내 주세요.")
     link = link_render.find_link(text)
-    is_link = bool(link) and len(text) < len(link) + 300  # a link, maybe with a short title around it
+    is_link =bool(link) and len(text) < len(link) + 300  # a link, maybe with a short title around it
     if not is_link and not (declared or "").startswith("text/"):
         return "", ""
     if is_link:
