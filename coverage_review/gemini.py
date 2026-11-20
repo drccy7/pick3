@@ -73,5 +73,32 @@ def generate_json(model: str, parts: list[dict], schema: dict, temperature: floa
     raise RuntimeError(f"Gemini {model} failed: {last}")
 
 
+def generate_json_stream(model: str, parts: list[dict], schema: dict, on_text, temperature: float = 0.0) -> dict:
+    """Same as generate_json but streamed (SSE): on_text(text_so_far) is called as chunks arrive,
+    so callers can show real progress. Falls back to the non-streamed call on any stream error."""
+    payload = {
+        "contents": [{"role": "user", "parts": parts}],
+        "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema,
+                             "temperature": temperature},
+    }
+    url = f"{BASE}/v1beta/models/{model}:streamGenerateContent"
+    text = ""
+    try:
+        with httpx.stream("POST", url, params={"alt": "sse"}, headers={"x-goog-api-key": _key()}, json=payload,
+                          timeout=httpx.Timeout(600.0, connect=30.0)) as r:
+            r.raise_for_status()
+            for line in r.iter_lines():
+                if not line.startswith("data:"):
+                    continue
+                ev = json.loads(line[5:].strip() or "{}")
+                for p in (ev.get("candidates") or [{}])[0].get("content", {}).get("parts", []):
+                    if p.get("text") and not p.get("thought"):
+                        text += p["text"]
+                on_text(text)
+        return json.loads(text)
+    except (httpx.HTTPError, json.JSONDecodeError, KeyError, IndexError):
+        return generate_json(model, parts, schema, temperature)
+
+
 def pdf_part(uri: str) -> dict:
     return {"file_data": {"mime_type": "application/pdf", "file_uri": uri}}

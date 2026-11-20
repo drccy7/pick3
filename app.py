@@ -15,6 +15,7 @@ if sys.stdout is not None and hasattr(sys.stdout, "reconfigure"):
 import asyncio
 import collections
 import os
+import time
 
 
 def _load_local_env(path: Path) -> None:
@@ -402,7 +403,15 @@ async def _run_link_job(user: dict, link: str, job: dict) -> None:
 
 # ---- 보장분석: shared PDFs are only stored; the user starts the proposal on coverage.html --------------
 _MEDIA = {"pdf": "application/pdf", "html": "text/html; charset=utf-8"}
-_COV_ACTIVE: dict[int, str] = {}  # report id -> progress line, for runs in this process
+_COV_ACTIVE: dict[int, dict] = {}  # report id -> progress {stage, label, done, total, started, stage_started}
+
+
+def _cov_progress(rid: int, p: dict) -> None:
+    """Record a progress step; keeps the run's start time and when the current stage began."""
+    now = time.monotonic()
+    cur = _COV_ACTIVE.get(rid) or {"started": now, "stage": 0}
+    stage_started = cur.get("stage_started", now) if p.get("stage") == cur.get("stage") else now
+    _COV_ACTIVE[rid] = {"started": cur["started"], "stage_started": stage_started, "done": None, "total": None, **p}
 
 
 async def _store_coverage(user: dict, raw: bytes, filename: str | None, encrypted: bool) -> dict:
@@ -435,7 +444,12 @@ async def coverage_list(x_pick3_token: Optional[str] = Header(default=None)) -> 
         r["has_extract"] = bool(r.pop("extract_ready", None))
         if r["status"] == "running":
             if r["id"] in _COV_ACTIVE:
-                r["message"] = _COV_ACTIVE[r["id"]]
+                p = _COV_ACTIVE[r["id"]]
+                now = time.monotonic()
+                r["message"] = p.get("label", "")
+                r["progress"] = {"stage": p.get("stage", 1), "done": p.get("done"), "total": p.get("total"),
+                                 "elapsed": int(now - p["started"]),
+                                 "stage_elapsed": int(now - p.get("stage_started", p["started"]))}
             else:
                 r["status"], r["message"] = "error", "중단됐습니다(서버가 다시 시작됨). 다시 작성해 주세요."
         r["files"] = [{"index": i, "name": f["name"]} for i, f in enumerate(r.pop("results") or [])]
@@ -467,17 +481,17 @@ async def coverage_run(report_id: int, body: CoverageRun, background: Background
                 except cov_pdf.PdfPasswordError:
                     return {"ok": False, "need_password": True, "message": "암호가 맞지 않습니다."}
             if not cov_service.is_coverage_report(raw):
-                _COV_ACTIVE[report_id] = "🧾 보장분석 보고서가 아니어서 의료비·처방 문서로 읽는 중…"
+                _cov_progress(report_id, {"stage": 1, "label": "보장분석 보고서가 아니어서 의료비·처방 문서로 읽는 중"})
                 await cov_store.update(user["id"], report_id, status="running", message="")
                 background.add_task(_coverage_as_medical, user, row, raw)
-                return {"ok": True, "message": _COV_ACTIVE[report_id]}
+                return {"ok": True, "message": _COV_ACTIVE[report_id]["label"]}
     except cov_store.StoreError as exc:
         raise _store_failed(exc)
     usage = await bump_usage(user["id"])
     per_user_limit, _ = _daily_limits(user)
     if usage["user_count"] > per_user_limit:
         return {"ok": False, "message": f"오늘 분석 한도({per_user_limit}건)를 넘었습니다. 내일 다시 시도해 주세요."}
-    _COV_ACTIVE[report_id] = "📋 시작…"
+    _cov_progress(report_id, {"stage": 1, "label": "시작"})
     await cov_store.update(user["id"], report_id, status="running", message="")
     background.add_task(_run_coverage, user, row, raw)
     return {"ok": True, "message": "제안서 작성을 시작했습니다(2~4분)."}
@@ -486,11 +500,11 @@ async def coverage_run(report_id: int, body: CoverageRun, background: Background
 async def _run_coverage(user: dict, row: dict, raw: bytes) -> None:
     rid, uid = row["id"], user["id"]
 
-    def progress(step: str) -> None:
-        _COV_ACTIVE[rid] = f"📋 {step}…"
+    def progress(p: dict) -> None:
+        _cov_progress(rid, p)
     try:
         res = await asyncio.to_thread(cov_service.run, raw, user_id=uid, rep=row.get("extract"), progress=progress)
-        _COV_ACTIVE[rid] = "📋 결과 저장 중…"
+        _cov_progress(rid, {"stage": 4, "label": "결과 저장 중"})
         base = row["storage_path"].rsplit("/", 1)[0]
         results = []
         for i, (name, data) in enumerate(res["docs"].items()):

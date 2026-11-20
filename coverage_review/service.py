@@ -54,12 +54,27 @@ def fetch_records(patient: str, user_id: int | None) -> list[dict]:
     return r.json()
 
 
-def extract(pdf_raw: bytes, model: str | None = None) -> dict:
+Progress = Callable[[dict], None]  # {"stage": 1-4, "label": str, "done": int|None, "total": int|None}
+
+
+def extract(pdf_raw: bytes, model: str | None = None, progress: Progress = lambda p: None) -> dict:
+    """Streamed so the caller sees real progress: contracts read so far / contracts the report says it has."""
     model = model or os.getenv("COVERAGE_EXTRACT_MODEL", DEFAULT_EXTRACT_MODEL)
+    progress({"stage": 1, "label": "보고서 올리는 중"})
     up = gemini.upload_pdf(pdf_raw)
+    progress({"stage": 1, "label": "보고서 읽는 중"})
+    seen = {"done": -1, "total": None}
+
+    def on_text(t: str) -> None:
+        m = re.search(r'"stated_contract_count"\s*:\s*(\d+)', t)
+        total = int(m.group(1)) if m else None
+        done = t.count('"insurer"')  # one per contract object (the key exists only there)
+        if (done, total) != (seen["done"], seen["total"]):
+            seen.update(done=done, total=total)
+            progress({"stage": 1, "label": "보고서 읽는 중", "done": done, "total": total})
     try:
-        return gemini.generate_json(model, [{"text": prompts.EXTRACT_PROMPT}, gemini.pdf_part(up["uri"])],
-                                    prompts.EXTRACT_SCHEMA)
+        return gemini.generate_json_stream(model, [{"text": prompts.EXTRACT_PROMPT}, gemini.pdf_part(up["uri"])],
+                                           prompts.EXTRACT_SCHEMA, on_text)
     finally:
         gemini.delete_file(up["name"])
 
@@ -86,7 +101,7 @@ def check_extract(rep: dict) -> list[str]:
 
 def run(pdf_raw: bytes, *, user_id: int | None, today: date | None = None, patient: str | None = None,
         records: list[dict] | None = None, rep: dict | None = None, analysis: dict | None = None,
-        encrypt: bool = True, progress: Callable[[str], None] = lambda s: None) -> dict:
+        encrypt: bool = True, progress: Progress = lambda p: None) -> dict:
     """Decrypted report PDF → {customer, facts, analysis, plan, warnings, docs: {filename: pdf bytes}}.
 
     `rep` / `analysis` let the CLI reuse cached steps. Records default to this user's rows for the
@@ -95,13 +110,12 @@ def run(pdf_raw: bytes, *, user_id: int | None, today: date | None = None, patie
     today = today or date.today()
     rules = load_rules()
     if rep is None:
-        progress("보고서 읽는 중")
-        rep = extract(pdf_raw)
+        rep = extract(pdf_raw, progress=progress)
     warnings = check_extract(rep)
     name = (patient or rep.get("customer", {}).get("name") or "").strip()
     if records is None:
         records = fetch_records(name, user_id) if name else []
-    progress(f"계산 중 (계약 {len(rep.get('contracts', []))}건 · 진료 기록 {len(records)}건)")
+    progress({"stage": 2, "label": f"병의원 기록과 대조 중 (계약 {len(rep.get('contracts', []))}건 · 기록 {len(records)}건)"})
     facts = build(rep, records, today, rules)
     if not facts["premium"]["matches_stated"]:
         warnings.append(f"월 보험료 불일치: 보고서 {facts['premium']['stated_monthly']:,}원, "
@@ -110,12 +124,12 @@ def run(pdf_raw: bytes, *, user_id: int | None, today: date | None = None, patie
         warnings.append(f"'{name}' 이름의 병의원 기록이 없어 보고서만으로 분석함")
     raw_analysis = analysis
     if raw_analysis is None:
-        progress("분석·제안 작성 중")
+        progress({"stage": 3, "label": "분석·제안 작성 중"})
         raw_analysis = analyze(facts)
     clean, w2 = plan.sanitize(dict(raw_analysis), facts)
     warnings += w2
     pp = plan.premium_plan(facts, clean, rules)
-    progress("PDF 만드는 중")
+    progress({"stage": 4, "label": "문서 만드는 중"})
     who = facts["customer"]["name"] or "고객"
     pages = {f"{who}_보장분석_청구및제안_{today}.pdf": render.html("analysis", facts, clean, pp, warnings),
              f"{who}_맞춤보장제안_{today}.pdf": render.html("proposal", facts, clean, pp, warnings)}

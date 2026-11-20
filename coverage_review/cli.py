@@ -59,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
     records = json.loads(pathlib.Path(args.records_json).read_text(encoding="utf-8")) if args.records_json else None
     res = service.run(raw, user_id=args.user_id, today=parse_date(args.today) if args.today else date.today(),
                       patient=args.patient, records=records, rep=rep, analysis=analysis, encrypt=args.encrypt,
-                      progress=lambda s: print(f"· {s}", flush=True))
+                      progress=lambda p: print(f"· {p['label']}" + (f" {p['done']}/{p.get('total') or '?'}" if p.get("done") is not None else ""), flush=True))
     for name, key in (("extract.json", "extract"), ("facts.json", "facts"), ("analysis.json", "analysis"),
                       ("plan.json", "plan")):
         (work / name).write_text(json.dumps(res[key], ensure_ascii=False, indent=1, default=str), encoding="utf-8")

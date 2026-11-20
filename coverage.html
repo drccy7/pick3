@@ -27,7 +27,7 @@
     .card .name { font-size: 16px; font-weight: 700; }
     .card .meta { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
     .card .msg { white-space: pre-line; font-size: 13.5px; margin-top: 8px; }
-    .card.running .msg::before {
+    .card.running .msg::before, .card.running .pinfo span:first-child::before {
       content: ""; display: inline-block; width: 12px; height: 12px; margin-right: 8px; vertical-align: -1px;
       border: 2px solid var(--muted); border-top-color: var(--accent); border-radius: 50%; animation: spin .9s linear infinite;
     }
@@ -48,6 +48,14 @@
       border: 1px solid var(--border); border-radius: 999px; padding: 6px 12px;
     }
     .del { color: var(--danger); background: transparent; margin-left: auto; }
+    .prog { margin-top: 10px; }
+    .steps { display: flex; gap: 4px; font-size: 11.5px; color: var(--muted); }
+    .steps span { flex: 1; text-align: center; padding: 3px 0; border-radius: 6px; background: var(--surface-2); }
+    .steps span.now { color: #fff; background: var(--accent); font-weight: 700; }
+    .steps span.past { color: var(--ok); }
+    .bar { height: 8px; border-radius: 99px; background: var(--surface-2); margin-top: 8px; overflow: hidden; }
+    .bar i { display: block; height: 100%; background: var(--accent); border-radius: 99px; transition: width .8s ease; }
+    .pinfo { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--muted); margin-top: 6px; }
     .err { color: var(--danger); font-size: 13px; margin-top: 6px; min-height: 1em; }
     .empty { color: var(--muted); font-size: 14px; margin-top: 18px; line-height: 1.6; }
   </style>
@@ -66,6 +74,35 @@
     const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
     const day = (s) => (s || "").slice(0, 10);
     let timer = null;
+    const STEPS = ["읽기", "대조", "분석", "문서"];
+    const mmss = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+
+    // Overall % from the server's stage + real counts (stage 1) or typical durations (stage 3).
+    function percent(p) {
+      if (p.stage === 1) {  // ~1 min of silent reading, then contracts stream in one by one
+        if (!p.total || !p.done) return 3 + 17 * Math.min(1, p.stage_elapsed / 60);
+        return 20 + 38 * Math.min(p.done, p.total) / p.total;
+      }
+      if (p.stage === 2) return 62;
+      if (p.stage === 3) return 64 + 28 * Math.min(1, p.stage_elapsed / 50);
+      return 95;
+    }
+
+    function progressHtml(r) {
+      const p = r.progress;
+      if (!p) return `<div class="msg">${esc(r.message || "작성 중…")}</div>`;
+      const detail = p.stage !== 1 ? esc(r.message || "")
+        : p.done > 0 ? (p.total && p.done >= p.total ? `계약 ${p.total}건 다 읽음 · 요약표 정리 중` : `계약 ${p.done}${p.total ? "/" + p.total : ""}건 읽음`)
+        : r.message === "보고서 올리는 중" ? "보고서 올리는 중" : "보고서 전체를 살펴보는 중";
+      return `<div class="prog">
+        <div class="steps">${STEPS.map((n, i) => `<span class="${i + 1 === p.stage ? "now" : i + 1 < p.stage ? "past" : ""}">${i + 1 < p.stage ? "✓ " : ""}${n}</span>`).join("")}</div>
+        <div class="bar"><i style="width:${percent(p).toFixed(0)}%"></i></div>
+        <div class="pinfo"><span>${detail}</span><span><b class="tick" data-base="${p.elapsed}" data-at="${Date.now()}">${mmss(p.elapsed)}</b> 경과 · 보통 3~4분</span></div>
+      </div>`;
+    }
+    setInterval(() => document.querySelectorAll(".tick").forEach((el) => {
+      el.textContent = mmss(+el.dataset.base + Math.floor((Date.now() - +el.dataset.at) / 1000));
+    }), 1000);
 
     function card(r) {
       const running = r.status === "running";
@@ -79,7 +116,7 @@
       return `<article class="card ${running ? "running" : ""}" data-id="${r.id}">
         <div class="name">${esc(title)}</div>
         <div class="meta">${esc(meta)}</div>
-        ${r.message || running ? `<div class="msg">${esc(r.message || "작성 중…")}</div>` : ""}
+        ${running ? progressHtml(r) : r.message ? `<div class="msg">${esc(r.message)}</div>` : ""}
         ${running ? "" : `<form class="row run" data-id="${r.id}">
           ${needPw ? `<input type="password" inputmode="numeric" autocomplete="off" placeholder="PDF 암호(보통 생년월일 8자리)" required />` : ""}
           <button class="btn" type="submit">${(r.files || []).length ? "다시 작성" : "제안서 작성"}</button>

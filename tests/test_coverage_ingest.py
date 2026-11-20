@@ -71,7 +71,7 @@ def store(monkeypatch: pytest.MonkeyPatch):
     fake.runs = []
 
     def fake_run(raw, *, user_id, rep=None, progress=lambda s: None, **kw):
-        progress("보고서 읽는 중")
+        progress({"stage": 1, "label": "보고서 읽는 중", "done": 3, "total": 14})
         fake.runs.append({"raw": raw, "rep": rep, "user_id": user_id})
         return {"customer": {"name": "홍길동", "birth_date": "1960-01-01"}, "records": 12,
                 "facts": {"contracts": [1, 2, 3]}, "extract": {"customer": {"name": "홍길동"}},
@@ -163,3 +163,37 @@ def test_pdf_size_limits(monkeypatch, store) -> None:
     assert _share(big)["status"] == "saved"  # a 16 MB report is fine (File API)
     monkeypatch.setattr(app.cov_service, "is_coverage_report", lambda raw: False)
     assert "15MB" in _share(big)["message"]  # a 16 MB medical PDF is not (inline Gemini)
+
+
+def test_running_report_shows_stage_and_contract_counts(monkeypatch, store) -> None:
+    import app
+    _fake(monkeypatch, SCREEN)
+    rid = _share(_pdf("pw"))["report_id"]
+    store.rows[rid]["status"] = "running"
+    app._cov_progress(rid, {"stage": 1, "label": "보고서 읽는 중", "done": 6, "total": 14})
+    p = _list()[0]["progress"]
+    assert p["stage"] == 1 and (p["done"], p["total"]) == (6, 14) and p["elapsed"] >= 0
+    app._cov_progress(rid, {"stage": 3, "label": "분석·제안 작성 중"})
+    r = _list()[0]
+    assert r["progress"]["stage"] == 3 and r["progress"]["done"] is None and r["message"] == "분석·제안 작성 중"
+    app._COV_ACTIVE.clear()
+    assert _list()[0]["status"] == "error"  # running but not in this process -> interrupted
+
+
+def test_extract_reports_contracts_read_while_streaming(monkeypatch) -> None:
+    from coverage_review import gemini, service
+    seen = []
+    monkeypatch.setattr(gemini, "upload_pdf", lambda raw: {"uri": "u", "name": "n"})
+    monkeypatch.setattr(gemini, "delete_file", lambda name: None)
+
+    def fake_stream(model, parts, schema, on_text, temperature=0.0):
+        text = '{"report": {"issuer": "x", "stated_contract_count": 2}, "contracts": [{"no": 1, "insurer": "a"}'
+        on_text(text)
+        text += ', {"no": 2, "insurer": "b"}]}'
+        on_text(text)
+        return {"ok": True}
+
+    monkeypatch.setattr(gemini, "generate_json_stream", fake_stream)
+    assert service.extract(b"%PDF", progress=seen.append) == {"ok": True}
+    counts = [(p.get("done"), p.get("total")) for p in seen if p.get("done") is not None]
+    assert counts == [(1, 2), (2, 2)] and seen[0]["label"] == "보고서 올리는 중"

@@ -32,7 +32,9 @@ EXTRACT_SCHEMA = {
             "stated_monthly_premium": {"type": "NUMBER", "nullable": True, "description": "보고서가 적은 월 보험료 합계(원)"},
             "caveats": {"type": "ARRAY", "items": {"type": "STRING"},
                         "description": "합계 제외 계약, 조회 기준 등 보고서의 유의사항 원문 요약"},
-        }, "required": ["issuer", "caveats"]},
+        }, "required": ["issuer", "caveats"],
+           "propertyOrdering": ["issuer", "stated_contract_count", "stated_monthly_premium", "analysis_date",
+                                "checkup_date", "caveats"]},
         "customer": {"type": "OBJECT", "properties": {
             "name": {"type": "STRING"},
             "sex": {"type": "STRING", "enum": ["남", "여", "미상"]},
@@ -71,6 +73,8 @@ EXTRACT_SCHEMA = {
         }, "required": ["name", "grade"]}},
     },
     "required": ["report", "customer", "contracts", "summary", "risks"],
+    # Output order matters for streamed progress: the report's contract count comes first, then contracts.
+    "propertyOrdering": ["report", "customer", "contracts", "summary", "risks"],
 }
 
 EXTRACT_PROMPT = """첨부한 PDF는 한 고객의 보험 보장분석 보고서입니다(보험사·분석 서비스마다 양식이 다릅니다).
