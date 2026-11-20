@@ -213,7 +213,8 @@ def check_extract(rep: dict) -> list[str]:
 
 def run(pdf_raw: bytes, *, user_id: int | None, today: date | None = None, patient: str | None = None,
         records: list[dict] | None = None, rep: dict | None = None, analysis: dict | None = None,
-        overrides: dict | None = None, progress: Progress = lambda p: None) -> dict:
+        overrides: dict | None = None, checkups: list[dict] | None = None,
+        progress: Progress = lambda p: None) -> dict:
     """Decrypted report PDF → {customer, facts, analysis, plan, warnings, docs: {filename.html: bytes}}.
 
     `rep` / `analysis` let the CLI reuse cached steps. Records default to this user's rows for the
@@ -228,7 +229,7 @@ def run(pdf_raw: bytes, *, user_id: int | None, today: date | None = None, patie
     if records is None:
         records = fetch_records(name, user_id) if name else []
     progress({"stage": 2, "label": f"병의원 기록과 대조 중 (계약 {len(rep.get('contracts', []))}건 · 기록 {len(records)}건)"})
-    facts = build(rep, records, today, rules, overrides)
+    facts = build(rep, records, today, rules, overrides, checkups)
     if not facts["premium"]["matches_stated"]:
         warnings.append(f"월 보험료 불일치: 보고서 {facts['premium']['stated_monthly']:,}원, "
                         f"추출 합계 {facts['premium']['monthly_sum']:,}원")

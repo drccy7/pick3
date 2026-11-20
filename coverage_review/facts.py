@@ -400,7 +400,7 @@ def _range_for_age(product: dict, age: int | None) -> dict:
 
 
 def build(report: dict, records: list[dict], today: date, rules: dict | None = None,
-          overrides: dict | None = None) -> dict:
+          overrides: dict | None = None, checkups: list[dict] | None = None) -> dict:
     rules = rules or load_rules()
     cust = report.get("customer", {})
     birth = parse_date(cust.get("birth_date"))
@@ -493,6 +493,8 @@ def build(report: dict, records: list[dict], today: date, rules: dict | None = N
         "recurring": recurring(recs, rules),
         "indemnity_estimate": indemnity_estimate(recs, periods, today, rules),
         "diagnoses": diagnoses(recs, today),
+        # 건강검진 (E… exams, C… items outside the form's own reference or marked 의심·경계 on the form)
+        "checkups": checkups or [],
         "diagnosis_note": "상병명은 요양기관 청구용 코드라 의증·배제상병이 포함될 수 있음(확진 아님)"
                           if any(r.get("dx_code") for r in recs) else None,
         "products": products,

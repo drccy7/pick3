@@ -58,7 +58,7 @@ def disclosure(recs: list[dict], dx: list[dict], meds: list[dict], today: date) 
 
 
 def build(name: str, records: list[dict], med_rows: list[dict], today: date, rules: dict | None = None,
-          checkup_docs: int = 0) -> dict:
+          checkups: list[dict] | None = None) -> dict:
     rules = rules or F.load_rules()
     recs = F.normalize_records(records, rules)
     dx = F.diagnoses(recs, today)
@@ -78,7 +78,7 @@ def build(name: str, records: list[dict], med_rows: list[dict], today: date, rul
         "diagnoses": dx, "recurring": F.recurring(recs, rules), "meds": meds,
         "disclosure": disclosure(recs, dx, meds, today),
         "products": [{"key": p["key"], "label": p["label"], "proposal": p["proposal"]} for p in rules["products"]],
-        "checkup_docs": checkup_docs,
+        "checkups": checkups or [],
     }
 
 
@@ -99,8 +99,11 @@ SCHEMA = {
 }
 
 PROMPT = """당신은 보험 설계사를 돕는 분석가입니다. 아래 facts(JSON)는 고객 한 명의 건강 기록입니다
-(병의원·약국 이용 기록, 진단명, 정기 진료, 투약). 고객의 현재 보험 계약 정보는 없습니다.
-facts 에 있는 사실만 쓰고, 근거는 facts 의 id(R…, D…, P…, M…)로 evidence 에 적으세요. 추측하지 마세요.
+(병의원·약국 이용 기록, 진단명, 정기 진료, 투약, 건강검진). 고객의 현재 보험 계약 정보는 없습니다.
+facts 에 있는 사실만 쓰고, 근거는 facts 의 id(R…, D…, P…, M…, E…, C…)로 evidence 에 적으세요. 추측하지 마세요.
+facts.checkups: judgments 는 검진 문서에 적힌 판정 그대로, flagged(C…)는 문서 참고치를 벗어나거나 의심·경계·유질환으로
+표시된 항목입니다. 검진의 의심·유질환·재검사 소견은 알릴의무(최근 1년 추가검사 등) 대상일 수 있으니 disclosure_notes 에 적고,
+needs 의 근거로도 쓰세요(예: 당뇨 의심 → 뇌·심장, 질병수술).
 
 - key_points: 설계사가 먼저 알아야 할 3~5가지(건강 상태의 큰 그림, 가입 심사에 영향을 줄 것, 권할 보장 방향).
 - needs: facts.products 의 key 중에서, 기록이 근거가 되는 보장 영역만 골라 priority(1이 가장 높음)와 이유를 쓰세요.
@@ -109,13 +112,14 @@ facts 에 있는 사실만 쓰고, 근거는 facts 의 id(R…, D…, P…, M…
   청약 때 사실대로 알려야 할 항목을 정리하세요. 숨기거나 줄이는 방향의 조언은 절대 하지 마세요.
   유병자(간편심사) 상품이 맞을지 표준 상품이 가능할지에 대한 판단 근거도 적되, 최종 판단은 보험사 심사라고 쓰세요.
 - cautions: 이 분석의 한계(금액 없는 기록, 비급여 없음, 진단명에 의심 진단 포함 가능, 건강검진 결과 미반영 등)와 다음 단계
-  (보장분석 보고서나 보험증권을 받으면 현재 보장과 비교 가능).
+  (보장분석 보고서나 보험증권을 받으면 현재 보장과 비교 가능). 검진 결과가 없으면 그것도 한계로 적으세요.
 진단·치료에 대한 의학적 판단은 하지 마세요. 문장은 짧고 쉬운 한국어로 쓰세요."""
 
 
 def sanitize(a: dict, facts: dict) -> tuple[dict, list[str]]:
     known = {x["id"] for k in ("diagnoses", "recurring", "meds") for x in facts[k]}
     known |= {u["id"] for lst in facts["disclosure"].values() for u in lst}
+    known |= {x for e in facts.get("checkups", []) for x in [e["id"], *(c["id"] for c in e["flagged"])]}
     keys = {p["key"] for p in facts["products"]}
     warns = []
     needs = []
@@ -148,9 +152,9 @@ def html(facts: dict, analysis: dict, warnings: list[str]) -> str:
 
 
 def run(name: str, records: list[dict], med_rows: list[dict], *, today: date | None = None,
-        analysis: dict | None = None, checkup_docs: int = 0) -> dict:
+        analysis: dict | None = None, checkups: list[dict] | None = None) -> dict:
     today = today or date.today()
-    facts = build(name, records, med_rows, today, checkup_docs=checkup_docs)
+    facts = build(name, records, med_rows, today, checkups=checkups)
     raw = analysis if analysis is not None else analyze(facts)
     clean, warns = sanitize(dict(raw), facts)
     page = html(facts, clean, warns)

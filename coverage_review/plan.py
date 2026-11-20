@@ -9,6 +9,8 @@ def _known_ids(facts: dict) -> set[str]:
     ids = {c["id"] for c in facts["contracts"]} | {k["id"] for k in facts["clusters"]}
     ids |= {p["id"] for p in facts["recurring"]} | {facts["indemnity_estimate"]["id"]}
     ids |= {d["id"] for d in facts.get("diagnoses", [])}
+    for e in facts.get("checkups", []):
+        ids |= {e["id"]} | {c["id"] for c in e["flagged"]}
     for k in facts["clusters"]:
         ids |= set(k["records"])
     for p in facts["recurring"]:
@@ -20,7 +22,7 @@ def _known_ids(facts: dict) -> set[str]:
 
 # Citing a whole section is allowed (e.g. the report's summary table or risk grades have no row ids).
 SECTION_IDS = {"summary", "risks", "products", "premium", "coverage_by_category", "records", "customer",
-               "report", "indemnity_periods", "over_coverage", "blank_contracts", "diagnoses"}
+               "report", "indemnity_periods", "over_coverage", "blank_contracts", "diagnoses", "checkups"}
 
 
 def sanitize(analysis: dict, facts: dict) -> tuple[dict, list[str]]:

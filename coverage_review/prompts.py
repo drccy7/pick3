@@ -155,6 +155,10 @@ ANALYZE_PROMPT = """당신은 보험 설계사를 돕는 분석가입니다. 아
 facts.contracts 의 status/status_label 은 납입 상태입니다(status_confirmed=true 는 설계사가 확인한 값).
 coverage_uncertain=true 인 계약(해지·유예·완납 미확인)은 보장이 남아 있는지 확인이 필요하다고 cautions 에 적고,
 그 계약의 담보를 '충분한 보장'의 근거로 쓰지 마세요.
+facts.checkups(E1… 검진, C1… 항목)가 있으면 건강검진 결과입니다. judgments 는 검진 문서에 적힌 판정 그대로이고,
+flagged 는 문서의 참고치를 벗어나거나 문서가 의심·경계·유질환으로 표시한 항목입니다.
+- cautions: 검진의 질환의심·유질환·재검사 소견은 청약서 알릴의무(최근 1년 추가검사 등) 대상일 수 있으니 고지 확인을 적으세요.
+- gaps: 검진 위험 신호(예: 당뇨 의심·혈압·비만)와 관련된 보장(뇌·심장, 질병수술 등)이 비어 있으면 근거(C…)로 쓰세요.
 facts.diagnoses(D1, D2…)가 있으면 건강보험 요양급여내역의 상병코드입니다(의증·배제상병 포함 가능, 확진 아님).
 - claims: 진단명이 진단비·수술비·입원일당 담보와 맞으면 근거로 쓰되 "가능성 있음 → 진단서·수술확인서로 확인"으로.
 - cautions: 최근 3개월·5년 이내 진단(within_3_months, within_5_years)과 장기 투약(max_supply_days)은

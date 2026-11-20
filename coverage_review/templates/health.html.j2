@@ -5,7 +5,7 @@
 <h1>{{ f.customer.name }} 님 건강·보험 분석</h1>
 <div class="meta">작성 {{ f.today }} · 설계사 내부 검토용 · 보장분석 보고서 없이 건강 기록만으로 작성<br>
 자료: 병의원·약국 이용 기록 {{ r.count }}건{% if r.first %}({{ r.first }} ~ {{ r.last }}{% if r.without_amount %}, 이 중 {{ r.without_amount }}건은 금액 없는 진료이력{% endif %}){% endif %}
-· 투약 {{ f.meds|length }}종{% if f.checkup_docs %} · 건강검진 문서 {{ f.checkup_docs }}건(아직 분석에 반영 안 됨){% endif %}</div>
+· 투약 {{ f.meds|length }}종 · 건강검진 {{ f.checkups|length }}회</div>
 
 <div class="box"><b>핵심 요약</b><ul>{% for k in a.key_points %}<li>{{ k }}</li>{% endfor %}</ul></div>
 {% if warnings %}<div class="box warn small"><b>자동 점검</b><ul>{% for w in warnings %}<li>{{ w }}</li>{% endfor %}</ul></div>{% endif %}
@@ -23,24 +23,33 @@
 <td class="n">{{ m.dispensings }}회</td><td class="n">{{ m.total_days }}일{% if m.long_term %} <span class="tag mid">30일+</span>{% endif %}</td><td style="white-space:nowrap">{{ m.first }}{% if m.last != m.first %}<br>~ {{ m.last }}{% endif %}</td></tr>{% endfor %}</table>
 {% else %}<p class="small">투약 기록이 없습니다.</p>{% endif %}
 
-<h2>3. 가입 심사 · 알릴의무 점검</h2>
+<h2>3. 건강검진</h2>
+{% if f.checkups %}{% for e in f.checkups %}<p><b>[{{ e.id }}] {{ e.date }}</b> {{ e.provider or '' }} · 검사 {{ e.tested }}개</p>
+{% if e.judgments %}<div class="box small"><b>검진 판정(문서에 적힌 그대로)</b><br>{{ e.judgments|join(' / ') }}</div>{% endif %}
+{% if e.flagged %}<table><tr><th>근거</th><th>검사</th><th>결과</th><th>참고치</th></tr>
+{% for c in e.flagged %}<tr><td>{{ c.id }}</td><td>{{ c.name }}</td><td><b class="r">{{ c.result }}</b></td><td>{{ c.ref or '' }}</td></tr>{% endfor %}</table>
+{% else %}<p class="small">참고치를 벗어나거나 의심·경계로 표시된 항목이 없습니다.</p>{% endif %}{% endfor %}
+{% else %}<p class="small">건강검진 결과가 없습니다. 나의건강기록 앱에서 검진 결과 PDF를 받아 공유하면 반영됩니다.</p>{% endif %}
+
+<h2>4. 가입 심사 · 알릴의무 점검</h2>
 <table><tr><th style="width:34%">청약서 질문</th><th>기록에서 찾은 것</th></tr>
 <tr><td>최근 3개월 진찰·치료·투약</td><td>{% for x in u.within_3_months %}[{{ x.id }}] {{ x.date }} {{ x.provider }}{% if x.dx %}({{ x.dx }}){% endif %}{% if not loop.last %}<br>{% endif %}{% else %}없음{% endfor %}</td></tr>
 <tr><td>5년 내 입원</td><td>{% for x in u.inpatient_5_years %}[{{ x.id }}] {{ x.date }} {{ x.provider }}{% if x.dx %}({{ x.dx }}){% endif %}{% if not loop.last %}<br>{% endif %}{% else %}없음{% endfor %}</td></tr>
 <tr><td>5년 내 같은 진단 7회 이상 진료</td><td>{% for x in u.repeated_dx_5_years %}[{{ x.id }}] {{ x.name }} {{ x.visits }}회{% if not loop.last %}<br>{% endif %}{% else %}없음{% endfor %}</td></tr>
+{% for e in f.checkups if e.flagged %}<tr><td>건강검진 이상 소견 ({{ e.date }})</td><td>{% for c in e.flagged %}[{{ c.id }}] {{ c.name }} {{ c.result }}{% if not loop.last %}<br>{% endif %}{% endfor %}</td></tr>{% endfor %}
 <tr><td>30일 이상 투약</td><td>{% for x in u.meds_30_days %}[{{ x.id }}] {{ x.ingredient }} {{ x.total_days }}일{% if not loop.last %}<br>{% endif %}{% else %}없음{% endfor %}</td></tr>
 </table>
 {% if a.disclosure_notes %}<ul>{% for d in a.disclosure_notes %}<li>{{ d.text }}{% if d.evidence %} <span class="small">[{{ d.evidence|join(', ') }}]</span>{% endif %}</li>{% endfor %}</ul>{% endif %}
-<p class="small">※ 기록으로 확인한 범위입니다. 수술 여부, 건강검진 재검사 소견, 비급여 진료는 이 기록에 없을 수 있습니다. 청약 때는 고객이 기억하는 내용까지 사실대로 알려야 합니다.</p>
+<p class="small">※ 기록으로 확인한 범위입니다. 수술 여부, 비급여 진료, 이 자료에 없는 검진은 이 기록에 없을 수 있습니다. 청약 때는 고객이 기억하는 내용까지 사실대로 알려야 합니다.</p>
 
-<h2>4. 기록이 가리키는 보장 영역</h2>
+<h2>5. 기록이 가리키는 보장 영역</h2>
 {% if a.needs %}<table><tr><th>순위</th><th>보장</th><th>제안 기준</th><th>이유</th><th>근거</th></tr>
 {% for n in a.needs %}{% set pr = prod[n.product_key] %}<tr><td><span class="tag {{ 'hi' if n.priority == 1 else 'mid' }}">{{ n.priority }}</span></td>
 <td><b>{{ pr.label }}</b></td><td>{{ pr.proposal }}</td><td>{{ n.reason }}</td><td class="small">{{ n.evidence|join(', ') }}</td></tr>{% endfor %}</table>
 <p class="small">현재 가입한 보험을 모르는 상태의 분석입니다. 이미 가입돼 있다면 보장금액이 충분한지 확인하는 기준으로 쓰세요.</p>
 {% else %}<p class="small">기록만으로는 특별히 권할 보장 영역이 나오지 않았습니다.</p>{% endif %}
 
-<h2>5. 유의사항과 다음 단계</h2>
+<h2>6. 유의사항과 다음 단계</h2>
 <ul>{% for c in a.cautions %}<li>{{ c }}</li>{% endfor %}</ul>
 <p class="small">본 자료는 병의원 이용 기록을 바탕으로 한 상담 참고자료이며 의학적 진단이 아닙니다. 가입 가능 여부와 조건은 보험사 심사로 정해집니다.</p>
 </body></html>

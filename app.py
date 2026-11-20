@@ -48,7 +48,7 @@ from pydantic import BaseModel, field_validator
 try:
     from .providers import ProviderType, SituationType, get_kakao_diag, get_recommendations
     from .reels_script import build_reels_script
-    from . import auth_pin, doc_registry, link_render, medical, mhr, nhis_claims, prescriptions, screen_router
+    from . import auth_pin, doc_registry, health_checkup, link_render, medical, mhr, nhis_claims, prescriptions, screen_router
     from .coverage_review import pdf_io as cov_pdf, service as cov_service, store as cov_store
     from .coverage_review import health as cov_health
     from .coverage_review import gemini as cov_gemini
@@ -72,6 +72,7 @@ except ImportError:
     from reels_script import build_reels_script
     import auth_pin
     import doc_registry
+    import health_checkup
     import link_render
     import nhis_claims
     from coverage_review import pdf_io as cov_pdf, service as cov_service, store as cov_store
@@ -368,7 +369,10 @@ async def ingest_screenshot(
                 res["message"] = (await _process_mhr(user, res["report_id"], raw))["message"]
             return res
         if box in ("coverage", "checkup"):  # store only, whatever the confidence: the user starts it on Pick3
-            return await _store_doc(user, raw, image.filename, box)
+            res = await _store_doc(user, raw, image.filename, box)
+            if box == "checkup" and res["status"] == "saved":
+                await _name_checkup(user, res["report_id"], raw)
+            return res
         if doc["type"] and not (box == "medical" and sure):  # a weak guess: the user confirms in the 🔒 box
             return await _store_opened(user, raw, image.filename, box, "unsure")
         if len(raw) > medical.MAX_UPLOAD_BYTES:  # medical PDFs are sent inline to Gemini
@@ -568,8 +572,10 @@ async def _run_coverage(user: dict, row: dict, raw: bytes) -> None:
     def progress(p: dict) -> None:
         _cov_progress(rid, p)
     try:
+        name = ((row.get("extract") or {}).get("customer") or {}).get("name") or row.get("customer_name") or ""
+        checkups = await _checkups_for(uid, name.strip()) if name.strip() else []
         res = await asyncio.to_thread(cov_service.run, raw, user_id=uid, rep=row.get("extract"), progress=progress,
-                                      overrides=row.get("overrides") or {})
+                                      overrides=row.get("overrides") or {}, checkups=checkups)
         _cov_progress(rid, {"stage": 4, "label": "결과 저장 중"})
         base = row["storage_path"].rsplit("/", 1)[0]
         results = []
@@ -690,6 +696,8 @@ async def _classify_one(user: dict, row: dict, kind: str) -> dict:
         return {"ok": True, "message": "지웠습니다."}
     if kind in ("coverage", "checkup"):
         await cov_store.update(user["id"], doc_id, kind=kind, status="stored", message=None)
+        if kind == "checkup":
+            await _name_checkup(user, doc_id, await cov_store.get_file(row["storage_path"]))
         return {"ok": True, "message": "\n".join(_DOC_SAVED[kind])}
     if kind == "mhr":
         raw = await cov_store.get_file(row["storage_path"])
@@ -868,15 +876,40 @@ async def health_run(report_id: int, background: BackgroundTasks,
     return await _start_health(user, (row.get("customer_name") or "").strip(), background, row)
 
 
+async def _checkups_for(uid: int, name: str) -> list[dict]:
+    """The person's checkup PDFs in the 🩺 box, read (no Gemini) into checkup facts (E…/C…)."""
+    exams = []
+    try:
+        rows = [r for r in await cov_store.list_reports(uid, "checkup")
+                if (r.get("customer_name") or "").strip() == name and not r.get("encrypted")]
+        for r in rows[:5]:
+            row = await cov_store.get(uid, r["id"])
+            raw = await cov_store.get_file(row["storage_path"])
+            exams.append(await asyncio.to_thread(health_checkup.parse_pdf, raw))
+    except Exception:
+        pass  # analysis goes on without checkups
+    return health_checkup.facts([e for e in exams if e.get("items") or e.get("judgments")])
+
+
+async def _name_checkup(user: dict, doc_id: int, raw: bytes) -> None:
+    """A checkup shared on its own: take the person's name from the form so analyses can find it."""
+    try:
+        name = (await asyncio.to_thread(health_checkup.parse_pdf, raw)).get("name")
+        if name:
+            await cov_store.update(user["id"], doc_id, customer_name=name)
+    except Exception:
+        pass
+
+
 async def _run_health(user: dict, row: dict, name: str) -> None:
     rid, uid = row["id"], user["id"]
     gemini_usage.bind(uid, ref=f"coverage:{rid}")
     try:
         records = await asyncio.to_thread(cov_service.fetch_records, name, uid)
         meds = await prescriptions.list_rows(uid, name)
-        checkups = [r for r in await cov_store.list_reports(uid, "checkup") if (r.get("customer_name") or "") == name]
+        checkups = await _checkups_for(uid, name)
         _cov_progress(rid, {"stage": 3, "label": f"분석 작성 중 (진료 {len(records)}건 · 투약 {len(meds)}건)"})
-        res = await asyncio.to_thread(cov_health.run, name, records, meds, checkup_docs=len(checkups))
+        res = await asyncio.to_thread(cov_health.run, name, records, meds, checkups=checkups)
         _cov_progress(rid, {"stage": 4, "label": "결과 저장 중"})
         base = row["storage_path"].rsplit("/", 1)[0]
         results = []

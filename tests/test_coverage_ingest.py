@@ -436,18 +436,21 @@ def test_analyze_reruns_the_persons_report_or_writes_a_health_analysis(monkeypat
     seen = {}
 
     def fake_health(name, records, meds, **kw):
-        seen["health"] = (name, len(records), len(meds), kw.get("checkup_docs"))
+        seen["health"] = (name, len(records), len(meds), [c["id"] for e in kw.get("checkups") for c in e["flagged"]])
         return {"facts": {"records": {"count": 2}, "diagnoses": [1], "meds": [1, 2]}, "analysis": {"needs": [1]},
                 "warnings": [], "docs": {"홍길동_건강보험분석_2026-11-21.html": b"<html>h</html>"}}
 
     async def meds(uid, name):
         return [{"drug_name": "x"}]
     monkeypatch.setattr(app.cov_health, "run", fake_health)
+    monkeypatch.setattr(app.health_checkup, "parse_pdf", lambda raw: {
+        "name": "홍길동", "date": "2026-01-02", "provider": "가나의원", "judgments": ["일반질환의심"],
+        "items": [{"name": "공복혈당", "result": "130 당뇨병 의심", "ref": "100 미만", "status": "flag"}], "other": []})
     monkeypatch.setattr(app.cov_service, "fetch_records", lambda name, uid: [{"a": 1}, {"b": 2}])
     monkeypatch.setattr(app.prescriptions, "list_rows", meds)
     d = client.post(f"/api/docs/{mid}/analyze", headers=AUTH).json()  # no 보장분석 report for 홍길동
     assert d["ok"] and d["mode"] == "health" and "건강·보험 분석" in d["message"]
-    assert seen["health"] == ("홍길동", 2, 1, 1)
+    assert seen["health"] == ("홍길동", 2, 1, ["C1"])  # the 🩺 box exam split from the 나의건강기록, read
     (h,) = _list("health")
     assert h["status"] == "done" and "권할 보장 1개" in h["message"] and [f["name"] for f in h["files"]] == ["홍길동_건강보험분석_2026-11-21.html"]
     assert client.post(f"/api/health/{h['id']}/run", headers=AUTH).json()["ok"]  # 다시 작성
