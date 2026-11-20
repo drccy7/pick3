@@ -139,4 +139,17 @@
     },
     forget401() { write(NAME_KEY, ""); },
   };
+
+  // Moving between Pick3 pages always loads the newest page: phones (and GitHub Pages' 10-minute cache)
+  // otherwise keep showing an old page after a deploy. A changing ?v= makes each visit a new URL.
+  document.addEventListener("click", (e) => {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    const a = e.target.closest && e.target.closest("a[href]");
+    if (!a || (a.target && a.target !== "_self") || a.hasAttribute("download")) return;
+    let url;
+    try { url = new URL(a.getAttribute("href"), location.href); } catch { return; }
+    if (url.origin !== location.origin || !/(\/|\.html)$/.test(url.pathname)) return;
+    url.searchParams.set("v", Date.now().toString(36));
+    a.href = url.href;  // the browser follows the updated link
+  }, true);
 })();

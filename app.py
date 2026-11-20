@@ -139,7 +139,7 @@ async def index() -> FileResponse:
     index_path = BASE_DIR / "index.html"
     if not index_path.exists():
         raise HTTPException(status_code=404, detail="index.html not found")
-    return FileResponse(str(index_path))
+    return FileResponse(str(index_path), headers=_FRESH)
 
 
 @app.get("/manifest.json")
@@ -148,6 +148,9 @@ async def manifest() -> FileResponse:
     if not path.exists():
         raise HTTPException(status_code=404, detail="manifest.json not found")
     return FileResponse(str(path), media_type="application/manifest+json")
+
+
+_FRESH = {"Cache-Control": "no-cache"}  # pages and account.js: revalidate so a deploy shows at once
 
 
 @app.get("/account.js")
@@ -162,7 +165,7 @@ async def extra_page(request: Request) -> FileResponse:
     path = BASE_DIR / request.url.path.lstrip("/")
     if not path.exists():
         raise HTTPException(status_code=404, detail="page not found")
-    return FileResponse(str(path))
+    return FileResponse(str(path), headers=_FRESH)
 
 
 @app.get("/icon.svg")
