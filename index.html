@@ -132,11 +132,13 @@
       { icon: "🧾", name: "의료비 기록", desc: "병원·약국 결제 내역 정리 · 보험 청구용", href: "medical.html" },
       { icon: "💊", name: "처방·조제 기록", desc: "처방받은 약·약국 조제 내역 · 처방조제정보 PDF", href: "prescriptions.html" },
       { icon: "📋", name: "보장분석", desc: "보장분석 보고서 → 청구·보완 제안서", href: "coverage.html" },
+      { icon: "🩺", name: "건강검진", desc: "공유한 건강검진 결과 보관", href: "docs.html?box=checkup" },
+      { icon: "🔒", name: "암호 문서", desc: "암호 PDF 열기 · 종류 고르기", href: "docs.html?box=locked", id: "lockedCard" },
     ];
 
     const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
     document.getElementById("grid").innerHTML = SERVICES.map((s) => `
-      <a class="svc" href="${esc(s.href)}">
+      <a class="svc" href="${esc(s.href)}"${s.id ? ` id="${s.id}"` : ""}>
         <span class="icon" aria-hidden="true">${s.icon}</span>
         <span class="name">${esc(s.name)}</span>
         <span class="desc">${esc(s.desc)}</span>
@@ -189,8 +191,19 @@
         $("loginErr").textContent = "로그인이 끝났거나 토큰이 맞지 않습니다. 다시 들어가 주세요.";
       } else {
         el.textContent = n ? `${n} 님` : "확인 못 함 (서버 깨우는 중)";
-        if (n) { offerPin(); loadJobs(); loadUsage(); }
+        if (n) { offerPin(); loadJobs(); loadUsage(); loadLocked(); }
       }
+    }
+
+    // Encrypted PDFs waiting for their password: show the count on the 🔒 card.
+    async function loadLocked() {
+      try {
+        const res = await fetch(`${Pick3Account.API}/api/coverage?kind=locked`, { headers: { "X-Pick3-Token": Pick3Account.getToken() } });
+        if (!res.ok) return;
+        const rows = (await res.json()).reports || [];
+        const desc = document.querySelector("#lockedCard .desc");
+        if (desc && rows.length) desc.innerHTML = `<b style="color:var(--accent, #ff6b35)">열지 않은 문서 ${rows.length}건</b> · 암호 넣고 종류 고르기`;
+      } catch {}
     }
 
     // This month's Gemini usage (estimate from tokens x price table).

@@ -136,10 +136,9 @@
 
     function card(r) {
       const running = r.status === "running";
-      const needPw = r.encrypted && !r.has_extract;
       const title = r.customer_name ? `${r.customer_name} 님` : (r.filename || "보장분석 보고서");
       const meta = [`${day(r.created_at)} 저장`, r.size_bytes ? `${(r.size_bytes / 1048576).toFixed(1)}MB` : "",
-                    r.encrypted ? "🔒 암호 PDF" : "", r.records_count != null ? `병의원 기록 ${r.records_count}건` : "",
+                    r.records_count != null ? `병의원 기록 ${r.records_count}건` : "",
                     r.analyzed_at ? `작성 ${day(r.analyzed_at)}` : "", usageText(r.usage)].filter(Boolean).join(" · ");
       // HTML opens for reading on the phone; [PDF 보내기] sends that same HTML printed to PDF (no password).
       const kind = (f) => (f.name.includes("맞춤") ? "제안서" : "분석서");
@@ -156,7 +155,6 @@
         <div class="meta">${esc(meta)}</div>
         ${running ? progressHtml(r) : r.message ? `<div class="msg">${esc(r.message)}</div>` : ""}
         ${running ? "" : `<form class="row run" data-id="${r.id}">
-          ${needPw ? `<input type="password" inputmode="numeric" autocomplete="off" placeholder="PDF 암호(보통 생년월일 8자리)" required />` : ""}
           <button class="btn" type="submit">${(r.files || []).length ? "다시 작성" : "제안서 작성"}</button>
           ${r.has_extract ? `<button class="btn ghost stbtn" type="button" data-id="${r.id}">📝 계약 상태</button>` : ""}
         </form><div class="err" data-err="${r.id}"></div>`}
@@ -202,7 +200,7 @@
       try {
         const res = await fetch(`${Pick3Account.API}/api/coverage/${id}/run`, {
           method: "POST", headers: { "Content-Type": "application/json", "X-Pick3-Token": Pick3Account.getToken() },
-          body: JSON.stringify({ password: input ? input.value : "" }),
+          body: "{}",
         });
         const d = await res.json().catch(() => ({}));
         if (!d.ok) { err.textContent = d.message || d.detail || "시작하지 못했습니다."; btn.disabled = false; return; }

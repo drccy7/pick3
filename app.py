@@ -47,7 +47,7 @@ from pydantic import BaseModel, field_validator
 try:
     from .providers import ProviderType, SituationType, get_kakao_diag, get_recommendations
     from .reels_script import build_reels_script
-    from . import auth_pin, link_render, medical, nhis_claims, prescriptions, screen_router
+    from . import auth_pin, health_checkup, link_render, medical, nhis_claims, prescriptions, screen_router
     from .coverage_review import pdf_io as cov_pdf, service as cov_service, store as cov_store
     from .coverage_review import gemini as cov_gemini
     from . import gemini_usage
@@ -69,6 +69,7 @@ except ImportError:
     from providers import ProviderType, SituationType, get_kakao_diag, get_recommendations
     from reels_script import build_reels_script
     import auth_pin
+    import health_checkup
     import link_render
     import nhis_claims
     from coverage_review import pdf_io as cov_pdf, service as cov_service, store as cov_store
@@ -160,6 +161,7 @@ _FRESH = {"Cache-Control": "no-cache"}  # pages and account.js: revalidate so a 
 @app.get("/start.html")
 @app.get("/saved.html")
 @app.get("/coverage.html")
+@app.get("/docs.html")
 async def extra_page(request: Request) -> FileResponse:
     """Serve the service pages next to the index.html launcher (Render origin)."""
     path = BASE_DIR / request.url.path.lstrip("/")
@@ -352,9 +354,12 @@ async def ingest_screenshot(
     # One Shortcut for every service: classify first, then use that service's own extractor.
     mime = medical.sniff_mime(raw, image.content_type or "image/jpeg")
     if mime == "application/pdf":
-        encrypted = cov_pdf.is_encrypted(raw)
-        if encrypted or cov_service.is_coverage_report(raw):  # 보장분석: store only, the user starts it on Pick3
-            return await _store_coverage(user, raw, image.filename, encrypted)
+        if cov_pdf.is_encrypted(raw):  # unreadable until opened: 암호 문서함, the user opens and classifies it
+            return await _store_doc(user, raw, image.filename, "locked", encrypted=True)
+        if cov_service.is_coverage_report(raw):  # 보장분석: store only, the user starts it on Pick3
+            return await _store_doc(user, raw, image.filename, "coverage")
+        if health_checkup.is_checkup_pdf(raw):  # 건강검진: store only (analysis comes later)
+            return await _store_doc(user, raw, image.filename, "checkup")
         if len(raw) > medical.MAX_UPLOAD_BYTES:  # medical PDFs are sent inline to Gemini
             return {"status": "error", "message": "❌ 의료비·처방 PDF가 너무 큽니다(15MB 초과). 쪽을 나눠 보내 주세요."}
         # Other PDFs are medical documents (처방조제정보, 진료비 영수증); no restaurant arrives as a PDF.
@@ -424,32 +429,24 @@ def _cov_progress(rid: int, p: dict) -> None:
     _COV_ACTIVE[rid] = {"started": cur["started"], "stage_started": stage_started, "done": None, "total": None, **p}
 
 
-def _doc_hint(filename: str | None) -> str:
-    """What an encrypted PDF probably is, from its file name (the content can't be read before the password)."""
-    name = (filename or "").replace(" ", "")
-    return "nhis" if "요양급여" in name else ""
+_DOC_SAVED = {
+    "locked": ["🔒 암호가 걸린 PDF를 받았습니다.", "Pick3 홈 → 🔒 암호 문서에서 암호를 넣고 종류를 골라 주세요."],
+    "coverage": ["📋 보장분석 보고서를 저장했습니다.", "제안서는 Pick3 → 📋 보장분석에서 [제안서 작성]을 눌러 시작하세요."],
+    "checkup": ["🩺 건강검진 결과를 저장했습니다.", "Pick3 → 🩺 건강검진에서 볼 수 있습니다."],
+}
+DOC_BOXES = ("coverage", "locked", "checkup")
 
 
-async def _store_coverage(user: dict, raw: bytes, filename: str | None, encrypted: bool) -> dict:
+async def _store_doc(user: dict, raw: bytes, filename: str | None, kind: str, encrypted: bool = False) -> dict:
+    """Keep a shared PDF in one box of the document inbox (private bucket); nothing is analysed here."""
     path = f"{user.get('id')}/{secrets.token_hex(8)}/original.pdf"
     try:
         await cov_store.put_file(path, raw)
-        row = await cov_store.create(user.get("id"), filename or "보장분석.pdf", len(raw), encrypted, path)
+        row = await cov_store.create(user.get("id"), filename or "문서.pdf", len(raw), encrypted, path, kind)
     except cov_store.StoreError as exc:
-        return {"status": "error", "service": "coverage", "message": "❌ 보장분석 보고서를 저장하지 못했습니다.",
-                "detail": str(exc)}
-    if encrypted and _doc_hint(filename) == "nhis":
-        lines = ["🩺 건강보험 요양급여내역(암호 PDF)을 받았습니다.",
-                 "Pick3 → 🧾 의료비 기록 화면 위쪽에서 암호(보통 생년월일 6자리)를 넣으면",
-                 "진단명과 함께 의료비 기록으로 저장합니다."]
-    elif encrypted:
-        lines = ["🔒 암호가 걸린 PDF를 저장했습니다.",
-                 "Pick3 → 📋 보장분석에서 암호를 넣어 주세요(보통 생년월일).",
-                 "보장분석 보고서면 제안서를, 요양급여내역·의료비 PDF면 의료비 기록으로 처리합니다."]
-    else:
-        lines = ["📋 보장분석 보고서를 저장했습니다.",
-                 "제안서는 Pick3 → 📋 보장분석에서 [제안서 작성]을 눌러 시작하세요."]
-    return {"status": "saved", "service": "coverage", "report_id": row["id"], "message": "\n".join(lines)}
+        return {"status": "error", "service": "document", "message": "❌ 문서를 저장하지 못했습니다.", "detail": str(exc)}
+    return {"status": "saved", "service": "coverage" if kind == "coverage" else "document", "kind": kind,
+            "report_id": row["id"], "message": "\n".join(_DOC_SAVED[kind])}
 
 
 def _store_failed(exc: Exception) -> HTTPException:
@@ -457,15 +454,15 @@ def _store_failed(exc: Exception) -> HTTPException:
 
 
 @app.get("/api/coverage")
-async def coverage_list(kind: str = "", x_pick3_token: Optional[str] = Header(default=None)) -> dict:
-    """Stored report PDFs. kind=medical: only encrypted 요양급여내역 waiting on the 의료비 page."""
+async def coverage_list(kind: str = "coverage", x_pick3_token: Optional[str] = Header(default=None)) -> dict:
+    """One box of stored documents: coverage (보장분석, default) | locked (암호 문서함) | checkup (건강검진)."""
     user = await _current_user(x_pick3_token)
+    if kind not in DOC_BOXES:  # e.g. an old 의료비 page asking for kind=medical
+        return {"reports": []}
     try:
-        rows = await cov_store.list_reports(user["id"])
+        rows = await cov_store.list_reports(user["id"], kind)
     except cov_store.StoreError as exc:
         raise _store_failed(exc)
-    want = "nhis" if kind == "medical" else ""
-    rows = [r for r in rows if _doc_hint(r.get("filename")) == want]
     usage_by_ref: dict[str, list] = {}
     for u in await gemini_usage.fetch_rows(user["id"], ref_prefix="coverage:"):
         usage_by_ref.setdefault(u["ref"], []).append(u)
@@ -506,23 +503,13 @@ async def coverage_run(report_id: int, body: CoverageRun, background: Background
         row = await cov_store.get(user["id"], report_id)
         if not row:
             raise HTTPException(status_code=404, detail="보고서가 없습니다.")
-        if row.get("status") == "other":
-            return {"ok": False, "message": "이미 의료비 기록으로 처리했습니다. 다시 하려면 PDF를 다시 공유해 주세요."}
+        if (row.get("kind") or "coverage") != "coverage":
+            return {"ok": False, "message": "보장분석 보고서가 아닙니다."}
         raw = b""
-        if not row.get("extract"):  # first run: the PDF must be read (password needed if encrypted)
+        if not row.get("extract"):  # first run: the PDF must be read
+            if row["encrypted"]:  # passwords are entered once, in the 암호 문서함
+                return {"ok": False, "message": "🔒 암호 문서함에서 먼저 열어 주세요."}
             raw = await cov_store.get_file(row["storage_path"])
-            if row["encrypted"]:
-                if not body.password.strip():
-                    return {"ok": False, "need_password": True, "message": "PDF 암호를 넣어 주세요."}
-                try:
-                    raw = cov_pdf.decrypt(raw, body.password.strip())
-                except cov_pdf.PdfPasswordError:
-                    return {"ok": False, "need_password": True, "message": "암호가 맞지 않습니다."}
-            if not cov_service.is_coverage_report(raw):
-                _cov_progress(report_id, {"stage": 1, "label": "보장분석 보고서가 아니어서 의료비·처방 문서로 읽는 중"})
-                await cov_store.update(user["id"], report_id, status="running", message="")
-                background.add_task(_coverage_as_medical, user, row, raw)
-                return {"ok": True, "message": _COV_ACTIVE[report_id]["label"]}
     except cov_store.StoreError as exc:
         raise _store_failed(exc)
     usage = await bump_usage(user["id"])
@@ -579,26 +566,107 @@ async def _run_coverage(user: dict, row: dict, raw: bytes) -> None:
         _COV_ACTIVE.pop(rid, None)
 
 
-async def _coverage_as_medical(user: dict, row: dict, raw: bytes) -> None:
-    rid = row["id"]
+# ---- 암호 문서함: password once → Pick3 guesses the kind → the user confirms ------------------------------
+class DocOpen(BaseModel):
+    password: str = ""
+
+
+class DocClassify(BaseModel):
+    kind: str
+
+
+def _guess_kind(raw: bytes) -> str:
+    """coverage | medical (요양급여내역·처방조제·영수증 form) | checkup | "" (the user picks)."""
+    if cov_service.is_coverage_report(raw):
+        return "coverage"
+    if nhis_claims.is_nhis_pdf(raw) or prescriptions.is_prescription_pdf(raw):
+        return "medical"
+    if health_checkup.is_checkup_pdf(raw):
+        return "checkup"
+    return ""
+
+
+async def _locked_row(user: dict, doc_id: int) -> dict:
+    row = await cov_store.get(user["id"], doc_id)
+    if not row or row.get("kind") != "locked":
+        raise HTTPException(status_code=404, detail="암호 문서함에 없는 문서입니다.")
+    return row
+
+
+@app.post("/api/docs/{doc_id}/open")
+async def doc_open(doc_id: int, body: DocOpen, x_pick3_token: Optional[str] = Header(default=None)) -> dict:
+    """Decrypt once and keep the opened copy (the password itself is never stored); returns Pick3's guess."""
+    user = await _current_user(x_pick3_token)
     try:
-        if len(raw) > medical.MAX_UPLOAD_BYTES:
-            result = {"message": "❌ 의료비·처방 PDF가 너무 큽니다(15MB 초과)."}
-        else:
-            result = await _save_medical_document(user, raw, "application/pdf", "", row.get("filename"))
-        if result.get("status") == "saved":
-            await cov_store.delete_files([row["storage_path"]])  # done: don't keep the health-data PDF
-        await cov_store.update(user["id"], rid, status="other",
-                               message=result.get("message", "") + (
-                                   "" if _doc_hint(row.get("filename")) == "nhis" else
-                                   "\n(보장분석 보고서가 아니라 의료비·처방으로 처리했습니다. 이 항목은 지워도 됩니다.)"))
-    except Exception as exc:
+        row = await _locked_row(user, doc_id)
+        if not row["encrypted"]:
+            return {"ok": True, "suggested": row.get("suggested") or ""}
+        if not body.password.strip():
+            return {"ok": False, "message": "암호를 넣어 주세요."}
+        raw = await cov_store.get_file(row["storage_path"])
         try:
-            await cov_store.update(user["id"], rid, status="error", message=f"❌ 처리 실패: {type(exc).__name__}")
-        except Exception:
-            pass
-    finally:
-        _COV_ACTIVE.pop(rid, None)
+            raw = cov_pdf.decrypt(raw, body.password.strip())
+        except cov_pdf.PdfPasswordError:
+            return {"ok": False, "message": "암호가 맞지 않습니다."}
+        guess = await asyncio.to_thread(_guess_kind, raw)
+        await cov_store.put_file(row["storage_path"], raw)
+        await cov_store.update(user["id"], doc_id, encrypted=False, status="opened", suggested=guess or None)
+    except cov_store.StoreError as exc:
+        raise _store_failed(exc)
+    return {"ok": True, "suggested": guess}
+
+
+@app.post("/api/docs/{doc_id}/classify")
+async def doc_classify(doc_id: int, body: DocClassify, x_pick3_token: Optional[str] = Header(default=None)) -> dict:
+    """coverage / checkup: move to that box. medical: save as 의료비·처방 records, then drop the PDF. delete."""
+    user = await _current_user(x_pick3_token)
+    kind = body.kind
+    try:
+        row = await _locked_row(user, doc_id)
+        if row["encrypted"]:
+            return {"ok": False, "message": "먼저 암호를 넣어 열어 주세요."}
+        paths = [row["storage_path"]]
+        if kind == "delete":
+            await cov_store.delete_files(paths)
+            await cov_store.delete(user["id"], doc_id)
+            return {"ok": True, "message": "지웠습니다."}
+        if kind in ("coverage", "checkup"):
+            await cov_store.update(user["id"], doc_id, kind=kind, status="stored", message=None)
+            return {"ok": True, "message": "\n".join(_DOC_SAVED[kind])}
+        if kind != "medical":
+            raise HTTPException(status_code=400, detail="종류를 골라 주세요.")
+        raw = await cov_store.get_file(row["storage_path"])
+        if len(raw) > medical.MAX_UPLOAD_BYTES:
+            return {"ok": False, "message": "❌ 의료비·처방 PDF가 너무 큽니다(15MB 초과)."}
+        usage = await bump_usage(user["id"])
+        if usage["user_count"] > _daily_limits(user)[0]:
+            return {"ok": False, "message": "오늘 저장 한도를 넘었습니다. 내일 다시 시도해 주세요."}
+        result = await _save_medical_document(user, raw, "application/pdf", "", row.get("filename"))
+        if result.get("status") != "saved":  # stays in the box: the user can pick another kind
+            return {"ok": False, "message": result.get("message") or "의료비·처방으로 읽지 못했습니다."}
+        await cov_store.delete_files(paths)  # the records keep what is needed; don't keep the health-data PDF
+        await cov_store.delete(user["id"], doc_id)
+        return {"ok": True, "message": result.get("message", "")}
+    except cov_store.StoreError as exc:
+        raise _store_failed(exc)
+
+
+@app.get("/api/docs/{doc_id}/original")
+async def doc_original(doc_id: int, x_pick3_token: Optional[str] = Header(default=None)) -> Response:
+    """The stored PDF itself (opened copy), for viewing on the phone."""
+    user = await _current_user(x_pick3_token)
+    try:
+        row = await cov_store.get(user["id"], doc_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="문서가 없습니다.")
+        if row["encrypted"]:
+            raise HTTPException(status_code=409, detail="암호 문서는 먼저 열어 주세요.")
+        data = await cov_store.get_file(row["storage_path"])
+    except cov_store.StoreError as exc:
+        raise _store_failed(exc)
+    return Response(content=data, media_type="application/pdf",
+                    headers={"Content-Disposition": "inline; filename*=UTF-8''" + quote(row.get("filename") or "문서.pdf"),
+                             "Cache-Control": "no-store"})
 
 
 @app.get("/api/coverage/{report_id}/contracts")

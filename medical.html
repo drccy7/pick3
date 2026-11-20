@@ -65,7 +65,7 @@
     .err { color: var(--danger); }
       td .dx { color: var(--muted, #9aa3b2); font-size: 12px; margin-top: 2px; }
       #pending { margin: 10px 0 14px; display: grid; gap: 8px; }
-      .pcard { border: 1px solid var(--border, #2c3342); border-radius: 12px; padding: 10px 12px; }
+      .pcard { display: block; color: inherit; border: 1px solid var(--border, #2c3342); border-radius: 12px; padding: 10px 12px; }
       .pcard .t { font-weight: 700; font-size: 14px; }
       .pcard .m { white-space: pre-line; font-size: 13px; margin-top: 4px; color: var(--muted, #9aa3b2); }
       .pcard form { display: flex; gap: 6px; margin-top: 8px; }
@@ -203,52 +203,21 @@
       document.getElementById("msg").textContent = rows.length ? "" : "기록이 없습니다. 단축어 '의료비 저장'으로 결제 내역 화면을 공유해 보세요.";
     }
 
-    // Encrypted 건강보험 요양급여내역 shared via the Shortcut wait here for their password.
-    let pendTimer = null, pendWaiting = false;
+    // Encrypted PDFs (e.g. 요양급여내역) wait in the 암호 문서함; point there when any are waiting.
+    let pendTimer = null;
     async function loadPending() {
-      clearTimeout(pendTimer);
       const box = document.getElementById("pending");
-      if (box.contains(document.activeElement) && document.activeElement.tagName === "INPUT") {
-        pendTimer = setTimeout(loadPending, 3000); return;
-      }
       let rows = [];
       try {
-        const res = await fetch(`${API}/api/coverage?kind=medical`, { headers: { "X-Pick3-Token": token() } });
+        const res = await fetch(`${API}/api/coverage?kind=locked`, { headers: { "X-Pick3-Token": token() } });
         if (res.ok) rows = (await res.json()).reports || [];
       } catch { return; }
+      pendTimer = 1;
       box.hidden = !rows.length;
-      box.innerHTML = rows.map((r) => {
-        const running = r.status === "running";
-        const head = r.status === "other" ? "🩺 요양급여내역 처리 완료" : running ? "🩺 요양급여내역 읽는 중…" : "🔒 요양급여내역 · 암호를 넣어 주세요";
-        return `<div class="pcard" data-id="${r.id}"><div class="t">${head}</div>
-          <div class="m">${esc(r.message || r.filename || "")}</div>
-          ${r.status === "stored" || r.status === "error" ? `<form class="pw" data-id="${r.id}">
-            <input type="password" inputmode="numeric" autocomplete="off" placeholder="암호 (보통 생년월일 6자리)" required />
-            <button class="primary" type="submit">저장</button></form>` : ""}
-          ${running ? "" : `<button class="x" type="button" data-id="${r.id}">목록에서 지우기</button>`}</div>`;
-      }).join("");
-      if (rows.some((r) => r.status === "running")) { pendWaiting = true; pendTimer = setTimeout(loadPending, 2000); }
-      else if (pendWaiting) { pendWaiting = false; load(); }  // finished: show the new rows
+      box.innerHTML = rows.length ? `<a class="pcard" href="docs.html?box=locked" style="text-decoration:none">
+        <div class="t">🔒 열지 않은 암호 문서 ${rows.length}건</div>
+        <div class="m">요양급여내역 등 암호 PDF는 암호 문서함에서 암호를 넣고 종류를 고르면 여기에 기록됩니다. →</div></a>` : "";
     }
-    document.getElementById("pending").addEventListener("submit", async (e) => {
-      const f = e.target.closest(".pw"); if (!f) return;
-      e.preventDefault();
-      f.querySelector("button").disabled = true;
-      const res = await fetch(`${API}/api/coverage/${f.dataset.id}/run`, {
-        method: "POST", headers: { "Content-Type": "application/json", "X-Pick3-Token": token() },
-        body: JSON.stringify({ password: f.querySelector("input").value }),
-      }).catch(() => null);
-      const d = res ? await res.json().catch(() => ({})) : {};
-      if (!d.ok) { alert(d.message || d.detail || "처리하지 못했습니다."); f.querySelector("button").disabled = false; return; }
-      document.activeElement.blur();
-      pendWaiting = true;
-      loadPending();
-    });
-    document.getElementById("pending").addEventListener("click", async (e) => {
-      const b = e.target.closest(".x"); if (!b) return;
-      await fetch(`${API}/api/coverage/${b.dataset.id}`, { method: "DELETE", headers: { "X-Pick3-Token": token() } }).catch(() => null);
-      loadPending();
-    });
 
     async function load() {
       await Pick3Account.ready;
