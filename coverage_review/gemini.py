@@ -9,6 +9,16 @@ import time
 import httpx
 
 BASE = "https://generativelanguage.googleapis.com"
+# Optional callback(feature, model, response_json) to record token usage (Pick3 sets gemini_usage.record_sync).
+USAGE_HOOK = None
+
+
+def _usage(feature: str, model: str, data: dict) -> None:
+    if USAGE_HOOK and data.get("usageMetadata"):
+        try:
+            USAGE_HOOK(feature, model, data)
+        except Exception:
+            pass
 
 
 def _key() -> str:
@@ -50,7 +60,8 @@ def delete_file(name: str) -> None:
         pass  # files expire on their own after 48 h
 
 
-def generate_json(model: str, parts: list[dict], schema: dict, temperature: float = 0.0) -> dict:
+def generate_json(model: str, parts: list[dict], schema: dict, temperature: float = 0.0,
+                  feature: str = "coverage") -> dict:
     payload = {
         "contents": [{"role": "user", "parts": parts}],
         "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema,
@@ -65,6 +76,7 @@ def generate_json(model: str, parts: list[dict], schema: dict, temperature: floa
                 raise httpx.HTTPStatusError(r.text[:200], request=r.request, response=r)
             r.raise_for_status()
             data = r.json()
+            _usage(feature, model, data)
             text = "".join(p.get("text", "") for p in data["candidates"][0]["content"]["parts"])
             return json.loads(text)
         except (httpx.HTTPError, KeyError, json.JSONDecodeError) as exc:
@@ -73,7 +85,8 @@ def generate_json(model: str, parts: list[dict], schema: dict, temperature: floa
     raise RuntimeError(f"Gemini {model} failed: {last}")
 
 
-def generate_json_stream(model: str, parts: list[dict], schema: dict, on_text, temperature: float = 0.0) -> dict:
+def generate_json_stream(model: str, parts: list[dict], schema: dict, on_text, temperature: float = 0.0,
+                         feature: str = "coverage") -> dict:
     """Same as generate_json but streamed (SSE): on_text(text_so_far) is called as chunks arrive,
     so callers can show real progress. Falls back to the non-streamed call on any stream error."""
     payload = {
@@ -82,7 +95,7 @@ def generate_json_stream(model: str, parts: list[dict], schema: dict, on_text, t
                              "temperature": temperature},
     }
     url = f"{BASE}/v1beta/models/{model}:streamGenerateContent"
-    text = ""
+    text, last = "", {}
     try:
         with httpx.stream("POST", url, params={"alt": "sse"}, headers={"x-goog-api-key": _key()}, json=payload,
                           timeout=httpx.Timeout(600.0, connect=30.0)) as r:
@@ -91,13 +104,16 @@ def generate_json_stream(model: str, parts: list[dict], schema: dict, on_text, t
                 if not line.startswith("data:"):
                     continue
                 ev = json.loads(line[5:].strip() or "{}")
+                if ev.get("usageMetadata"):
+                    last = ev  # the final event carries the totals
                 for p in (ev.get("candidates") or [{}])[0].get("content", {}).get("parts", []):
                     if p.get("text") and not p.get("thought"):
                         text += p["text"]
                 on_text(text)
+        _usage(feature, model, last)
         return json.loads(text)
     except (httpx.HTTPError, json.JSONDecodeError, KeyError, IndexError):
-        return generate_json(model, parts, schema, temperature)
+        return generate_json(model, parts, schema, temperature, feature)
 
 
 def pdf_part(uri: str) -> dict:

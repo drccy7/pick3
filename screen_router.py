@@ -13,6 +13,11 @@ import os
 import httpx
 
 try:
+    from .gemini_usage import record as _record_usage
+except ImportError:
+    from gemini_usage import record as _record_usage
+
+try:
     from .saved_places import gemini_model
 except ImportError:
     from saved_places import gemini_model
@@ -51,6 +56,7 @@ async def classify_screen(raw: bytes, mime_type: str) -> str:
             resp = await client.post(url, headers={"x-goog-api-key": api_key}, json=payload)
             resp.raise_for_status()
             data = resp.json()
+            await _record_usage("router", gemini_model(), data)
         text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "{}")
         parsed = json.loads(text)
         if isinstance(parsed, list):

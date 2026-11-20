@@ -66,6 +66,7 @@
   <p class="sub">보장분석 보고서 PDF를 단축어로 공유하면 여기에 저장됩니다. 고객의 병의원 기록(같은 이름)과 대조해
     청구할 만한 내용과 보완 제안서를 만듭니다.</p>
   <p class="sub" id="state">불러오는 중…</p>
+  <p class="sub" id="usage"></p>
   <div class="list" id="list"></div>
 
   <script src="account.js"></script>
@@ -104,13 +105,30 @@
       el.textContent = mmss(+el.dataset.base + Math.floor((Date.now() - +el.dataset.at) / 1000));
     }), 1000);
 
+    const won = (n) => `₩${Math.round(n).toLocaleString("ko-KR")}`;
+    // AI cost estimate (tokens x price table); "+" when a model's price is unknown.
+    function usageText(u) {
+      if (!u) return "";
+      return u.krw ? `AI 약 ${won(u.krw)}${u.partial ? "+" : ""}` : `AI 토큰 ${Math.round(u.tokens / 1000)}천`;
+    }
+
+    async function loadUsage(token) {
+      try {
+        const res = await fetch(`${Pick3Account.API}/api/usage`, { headers: { "X-Pick3-Token": token } });
+        if (!res.ok) return;
+        const u = await res.json();
+        if (!u.calls) return;
+        $("usage").textContent = `이번 달 AI 사용 ${u.calls}회 · 약 ${won(u.krw)}${u.unpriced_models.length ? "+ (일부 모델 단가 미확인)" : ""} · 추정치, 정확한 금액은 Google 결제 화면`;
+      } catch {}
+    }
+
     function card(r) {
       const running = r.status === "running";
       const needPw = r.encrypted && !r.has_extract;
       const title = r.customer_name ? `${r.customer_name} 님` : (r.filename || "보장분석 보고서");
       const meta = [`${day(r.created_at)} 저장`, r.size_bytes ? `${(r.size_bytes / 1048576).toFixed(1)}MB` : "",
                     r.encrypted ? "🔒 암호 PDF" : "", r.records_count != null ? `병의원 기록 ${r.records_count}건` : "",
-                    r.analyzed_at ? `작성 ${day(r.analyzed_at)}` : ""].filter(Boolean).join(" · ");
+                    r.analyzed_at ? `작성 ${day(r.analyzed_at)}` : "", usageText(r.usage)].filter(Boolean).join(" · ");
       const files = (r.files || []).map((f) =>
         `<button class="file" type="button" data-id="${r.id}" data-i="${f.index}" data-name="${esc(f.name)}">📄 ${f.name.includes("맞춤") ? "제안서" : "분석서"}</button>`).join("");
       return `<article class="card ${running ? "running" : ""}" data-id="${r.id}">
@@ -143,6 +161,7 @@
         return;
       }
       const rows = data.reports || [];
+      loadUsage(token);
       $("state").textContent = rows.length ? `보고서 ${rows.length}건` : "";
       $("list").innerHTML = rows.length ? rows.map(card).join("") :
         '<p class="empty">아직 저장된 보고서가 없습니다.<br>카톡 등에서 보장분석 PDF → 공유 → <b>Pick3</b> 를 고르세요.</p>';

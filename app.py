@@ -49,6 +49,8 @@ try:
     from .reels_script import build_reels_script
     from . import auth_pin, link_render, medical, prescriptions, screen_router
     from .coverage_review import pdf_io as cov_pdf, service as cov_service, store as cov_store
+    from .coverage_review import gemini as cov_gemini
+    from . import gemini_usage
     from .saved_places import (
         StorageError,
         bump_usage,
@@ -69,6 +71,8 @@ except ImportError:
     import auth_pin
     import link_render
     from coverage_review import pdf_io as cov_pdf, service as cov_service, store as cov_store
+    from coverage_review import gemini as cov_gemini
+    import gemini_usage
     import medical
     import prescriptions
     import screen_router
@@ -248,6 +252,7 @@ async def _current_user(supplied: str | None) -> dict:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         if not user:
             raise HTTPException(status_code=401, detail=_AUTH_ERROR)
+        gemini_usage.bind(user.get("id"))
         return user
     expected = _ingest_token()
     if expected and not (token and secrets.compare_digest(token, expected)):
@@ -402,6 +407,7 @@ async def _run_link_job(user: dict, link: str, job: dict) -> None:
 
 
 # ---- 보장분석: shared PDFs are only stored; the user starts the proposal on coverage.html --------------
+cov_gemini.USAGE_HOOK = gemini_usage.record_sync  # 보장분석 Gemini calls run in a worker thread
 _MEDIA = {"pdf": "application/pdf", "html": "text/html; charset=utf-8"}
 _COV_ACTIVE: dict[int, dict] = {}  # report id -> progress {stage, label, done, total, started, stage_started}
 
@@ -440,7 +446,15 @@ async def coverage_list(x_pick3_token: Optional[str] = Header(default=None)) -> 
         rows = await cov_store.list_reports(user["id"])
     except cov_store.StoreError as exc:
         raise _store_failed(exc)
+    usage_by_ref: dict[str, list] = {}
+    for u in await gemini_usage.fetch_rows(user["id"], ref_prefix="coverage:"):
+        usage_by_ref.setdefault(u["ref"], []).append(u)
     for r in rows:
+        if f"coverage:{r['id']}" in usage_by_ref:
+            sm = gemini_usage.summarize(usage_by_ref[f"coverage:{r['id']}"])
+            r["usage"] = {"calls": sm["calls"], "krw": sm["krw"], "usd": sm["usd"],
+                          "tokens": sum(g["prompt_tokens"] + g["output_tokens"] for g in sm["groups"]),
+                          "partial": bool(sm["unpriced_models"])}
         r["has_extract"] = bool(r.pop("extract_ready", None))
         if r["status"] == "running":
             if r["id"] in _COV_ACTIVE:
@@ -499,6 +513,7 @@ async def coverage_run(report_id: int, body: CoverageRun, background: Background
 
 async def _run_coverage(user: dict, row: dict, raw: bytes) -> None:
     rid, uid = row["id"], user["id"]
+    gemini_usage.bind(uid, ref=f"coverage:{rid}")  # this run's Gemini calls, for the per-report cost
 
     def progress(p: dict) -> None:
         _cov_progress(rid, p)
@@ -688,6 +703,14 @@ async def recent_jobs(x_pick3_token: Optional[str] = Header(default=None)) -> di
     user = await _current_user(x_pick3_token)
     return {"jobs": [{k: v for k, v in j.items() if not k.startswith("_")}
                      for j in reversed(_JOBS.get(user.get("id"), []))]}
+
+
+@app.get("/api/usage")
+async def usage_summary(x_pick3_token: Optional[str] = Header(default=None)) -> dict:
+    """This user's Gemini usage this month (KST), by feature and model, with estimated cost."""
+    user = await _current_user(x_pick3_token)
+    rows = await gemini_usage.fetch_rows(user.get("id"), since=gemini_usage.month_start_kst())
+    return {"month_rows": len(rows), **gemini_usage.summarize(rows)}
 
 
 @app.get("/api/me")

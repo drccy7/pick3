@@ -17,6 +17,11 @@ from pathlib import Path
 import httpx
 
 try:
+    from .gemini_usage import record as _record_usage
+except ImportError:
+    from gemini_usage import record as _record_usage
+
+try:
     from .providers import RestaurantPick, _build_map_urls, _format_walk_distance, _haversine_meters
 except ImportError:
     from providers import RestaurantPick, _build_map_urls, _format_walk_distance, _haversine_meters
@@ -94,6 +99,7 @@ async def extract_place_from_image(image_bytes: bytes, mime_type: str = "image/j
         resp = await client.post(url, headers={"x-goog-api-key": api_key}, json=payload)
         resp.raise_for_status()
         data = resp.json()
+        await _record_usage("restaurant", gemini_model(), data)
 
     text = (
         data.get("candidates", [{}])[0]

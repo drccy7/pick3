@@ -74,7 +74,7 @@ def extract(pdf_raw: bytes, model: str | None = None, progress: Progress = lambd
             progress({"stage": 1, "label": "보고서 읽는 중", "done": done, "total": total})
     try:
         return gemini.generate_json_stream(model, [{"text": prompts.EXTRACT_PROMPT}, gemini.pdf_part(up["uri"])],
-                                           prompts.EXTRACT_SCHEMA, on_text)
+                                           prompts.EXTRACT_SCHEMA, on_text, feature="coverage_extract")
     finally:
         gemini.delete_file(up["name"])
 
@@ -84,7 +84,7 @@ def analyze(facts: dict, model: str | None = None) -> dict:
     model = model or os.getenv("COVERAGE_ANALYZE_MODEL", DEFAULT_ANALYZE_MODEL)
     return gemini.generate_json(model, [{"text": prompts.ANALYZE_PROMPT},
                                         {"text": "facts = " + json.dumps(facts, ensure_ascii=False, default=str)}],
-                                prompts.ANALYZE_SCHEMA, temperature=0.2)
+                                prompts.ANALYZE_SCHEMA, temperature=0.2, feature="coverage_analyze")
 
 
 def check_extract(rep: dict) -> list[str]:

@@ -186,7 +186,7 @@ def test_extract_reports_contracts_read_while_streaming(monkeypatch) -> None:
     monkeypatch.setattr(gemini, "upload_pdf", lambda raw: {"uri": "u", "name": "n"})
     monkeypatch.setattr(gemini, "delete_file", lambda name: None)
 
-    def fake_stream(model, parts, schema, on_text, temperature=0.0):
+    def fake_stream(model, parts, schema, on_text, temperature=0.0, feature=""):
         text = '{"report": {"issuer": "x", "stated_contract_count": 2}, "contracts": [{"no": 1, "insurer": "a"}'
         on_text(text)
         text += ', {"no": 2, "insurer": "b"}]}'
