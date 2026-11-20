@@ -61,12 +61,14 @@ def delete_file(name: str) -> None:
 
 
 def generate_json(model: str, parts: list[dict], schema: dict, temperature: float = 0.0,
-                  feature: str = "coverage") -> dict:
+                  feature: str = "coverage", thinking: str | None = None) -> dict:
     payload = {
         "contents": [{"role": "user", "parts": parts}],
         "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema,
                              "temperature": temperature},
     }
+    if thinking:  # Gemini 3 thinking level: minimal | low | medium | high
+        payload["generationConfig"]["thinkingConfig"] = {"thinkingLevel": thinking}
     url = f"{BASE}/v1beta/models/{model}:generateContent"
     last: Exception | None = None
     for attempt in range(3):
@@ -115,7 +117,7 @@ def generate_json_stream(model: str, parts: list[dict], schema: dict, on_text, t
         _usage(feature, model, last)
         return json.loads(text)
     except (httpx.HTTPError, json.JSONDecodeError, KeyError, IndexError):
-        return generate_json(model, parts, schema, temperature, feature)
+        return generate_json(model, parts, schema, temperature, feature, thinking)
 
 
 def pdf_part(uri: str) -> dict:

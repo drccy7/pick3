@@ -182,7 +182,9 @@ def analyze(facts: dict, model: str | None = None) -> dict:
     model = model or os.getenv("COVERAGE_ANALYZE_MODEL", DEFAULT_ANALYZE_MODEL)
     return gemini.generate_json(model, [{"text": prompts.ANALYZE_PROMPT},
                                         {"text": "facts = " + json.dumps(facts, ensure_ascii=False, default=str)}],
-                                prompts.ANALYZE_SCHEMA, temperature=0.2, feature="coverage_analyze")
+                                prompts.ANALYZE_SCHEMA, temperature=0.2, feature="coverage_analyze",
+                                # low thinking: same claims/gaps/optimization as high on the test report, 37 s -> 15 s
+                                thinking=os.getenv("COVERAGE_ANALYZE_THINKING", "low"))
 
 
 def check_extract(rep: dict) -> list[str]:

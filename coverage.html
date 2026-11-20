@@ -85,7 +85,7 @@
         return 15 + 45 * Math.min(p.done, p.total) / p.total;
       }
       if (p.stage === 2) return 62;
-      if (p.stage === 3) return 64 + 28 * Math.min(1, p.stage_elapsed / 45);
+      if (p.stage === 3) return 64 + 28 * Math.min(1, p.stage_elapsed / 20);
       return 95;
     }
 
@@ -98,7 +98,7 @@
       return `<div class="prog">
         <div class="steps">${STEPS.map((n, i) => `<span class="${i + 1 === p.stage ? "now" : i + 1 < p.stage ? "past" : ""}">${i + 1 < p.stage ? "✓ " : ""}${n}</span>`).join("")}</div>
         <div class="bar"><i style="width:${percent(p).toFixed(0)}%"></i></div>
-        <div class="pinfo"><span>${detail}</span><span><b class="tick" data-base="${p.elapsed}" data-at="${Date.now()}">${mmss(p.elapsed)}</b> 경과 · 보통 1~2분</span></div>
+        <div class="pinfo"><span>${detail}</span><span><b class="tick" data-base="${p.elapsed}" data-at="${Date.now()}">${mmss(p.elapsed)}</b> 경과 · 보통 1분</span></div>
       </div>`;
     }
     setInterval(() => document.querySelectorAll(".tick").forEach((el) => {
