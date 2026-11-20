@@ -117,7 +117,7 @@ def test_sanitize_drops_unsupported_and_protects_contracts() -> None:
     a, warns = plan.sanitize(_analysis(), f)
     assert [c["title"] for c in a["claims"]] == ["정형외과"] and a["claims"][0]["evidence"] == ["K1"]
     assert [g["product_key"] for g in a["gaps"]] == ["치아보철"]
-    assert {o["contract_no"]: o["action"] for o in a["optimization"]} == {1: "유지", 3: "정리검토"}
+    assert {o["contract_no"]: o["action"] for o in a["optimization"]} == {3: "정리검토"}  # C1 is not being paid: dropped
     assert any("ZZ9" in w for w in warns)
 
 

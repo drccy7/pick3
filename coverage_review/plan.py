@@ -58,6 +58,8 @@ def sanitize(analysis: dict, facts: dict) -> tuple[dict, list[str]]:
         if not c:
             warns.append(f"최적화: 계약 {o.get('contract_no')} 없음")
             continue
+        if o.get("action") != "유지" and c.get("paid_up_likely"):
+            continue  # not being paid now: no premium to save
         if o.get("action") != "유지" and o["contract_no"] in protected:
             warns.append(f"최적화: 계약 {o['contract_no']} 은 보호 대상 → 유지로 바꿈")
             o = {**o, "action": "유지"}

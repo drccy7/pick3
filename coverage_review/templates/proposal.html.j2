@@ -54,9 +54,9 @@ table { font-size: 8.6pt; } th, td { padding: 1.2mm 1.8mm; }
 
 <h2><span class="num">4</span> 보험료 전후 비교 (월)</h2>
 <div class="flow">
-<div class="st"><div class="l">지금(보고서 기준)</div><div class="v">{{ (p.stated or p.base)|manwon }}</div><div class="d">{{ (p.stated or p.base)|won }}원</div></div>
+<div class="st"><div class="l">지금 실제 납입</div><div class="v">{{ p.paying_now|manwon }}</div><div class="d">{% if p.paid_up %}보고서 {{ (p.stated or p.base)|manwon }} 중<br>납입 안 함 −{{ p.paid_up|manwon }}{% else %}{{ p.paying_now|won }}원{% endif %}</div></div>
 <div class="op">→</div>
-<div class="st down"><div class="l">정리 후</div><div class="v">약 {{ p.after_opt|manwon }}</div><div class="d">{% if p.paid_up %}납입 끝난 계약 −{{ p.paid_up|manwon }}<br>{% endif %}{% if p.removed %}중복 정리 −{{ p.removed|manwon }}{% endif %}</div></div>
+<div class="st down"><div class="l">정리 후</div><div class="v">약 {{ p.after_opt|manwon }}</div><div class="d">{% if p.removed %}중복 정리 −{{ p.removed|manwon }}{% endif %}{% if p.reductions %}{% if p.removed %}<br>{% endif %}감액은 견적 후 반영{% endif %}{% if not p.removed and not p.reductions %}변동 없음{% endif %}</div></div>
 <div class="op">+</div>
 <div class="st up"><div class="l">보강 추가</div><div class="v">약 {{ p.add_mid|manwon }}</div><div class="d">{{ p.add_min|manwon }}~{{ p.add_max|manwon }}</div></div>
 <div class="op">=</div>

@@ -483,16 +483,17 @@ def proposal_pdf(facts: dict, analysis: dict, plan: dict, warnings: list[str] | 
 
     # 4. premium flow
     page1.append(NumHead(4, "보험료 전후 비교 (월)"))
-    d2 = ""
-    if p["paid_up"]:
-        d2 += f"납입 끝난 계약 −{manwon(p['paid_up'])}<br/>"
-    if p["removed"]:
-        d2 += f"중복 정리 −{manwon(p['removed'])}"
+    d2 = f"중복 정리 −{manwon(p['removed'])}" if p["removed"] else ""
+    if p.get("reductions"):
+        d2 += ("<br/>" if d2 else "") + "감액은 견적 후 반영"
     ow = 6 * mm
     sw = (W - 3 * ow) / 4
-    now = p["stated"] or p["base"]
-    stages = [_stage("지금(보고서 기준)", manwon(now), f"{won(now)}원", "", sw),
-              _stage("정리 후", f"약 {manwon(p['after_opt'])}", d2 or "&nbsp;", "down", sw),
+    now = p["paying_now"]
+    d1 = f"{won(now)}원"
+    if p["paid_up"]:
+        d1 = f"보고서 {manwon(p['stated'] or p['base'])} 중<br/>납입 안 함 −{manwon(p['paid_up'])}"
+    stages = [_stage("지금 실제 납입", manwon(now), d1, "", sw),
+              _stage("정리 후", f"약 {manwon(p['after_opt'])}", d2 or "변동 없음", "down", sw),
               _stage("보강 추가", f"약 {manwon(p['add_mid'])}", f"{manwon(p['add_min'])}~{manwon(p['add_max'])}", "up", sw),
               _stage("제안 후 합계", f"약 {manwon(p['total_mid'])}",
                      f"범위 {manwon(p['total_min'])}~{manwon(p['total_max'])}", "total", sw)]
