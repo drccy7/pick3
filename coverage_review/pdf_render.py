@@ -18,7 +18,7 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import (CondPageBreak, Flowable, KeepInFrame, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table,
+from reportlab.platypus import (CondPageBreak, Flowable, KeepInFrame, PageBreak, Paragraph, SimpleDocTemplate, Table,
                                 TableStyle)
 
 from .render import lookups, man, manwon, topcov, won
@@ -173,10 +173,6 @@ def _page_no(canvas, doc) -> None:
 def _doc(buf, title: str, top: float, side: float) -> SimpleDocTemplate:
     return SimpleDocTemplate(buf, pagesize=A4, leftMargin=side, rightMargin=side, topMargin=top, bottomMargin=top,
                              title=title, author="Pick3", subject=title, creator="Pick3 coverage_review")
-
-
-def _join(parts, sep: str = " · ") -> str:
-    return sep.join(p for p in parts)
 
 
 # ───────────────────────────── analysis (설계사용 분석서) ─────────────────────────────
