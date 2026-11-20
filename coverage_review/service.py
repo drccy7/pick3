@@ -12,13 +12,23 @@ from typing import Callable
 import httpx
 import pdfplumber
 
-from . import gemini, pdf_io, plan, prompts, render
+from . import gemini, pdf_io, pdf_render, plan, prompts, render
 from .facts import build, load_rules
 
 
 def browser_enabled() -> bool:
     """Same switch as link_render.browser_enabled (PICK3_BROWSER=on); the CLI always has a browser locally."""
     return os.getenv("PICK3_BROWSER", "off").strip().lower() in ("on", "1", "true", "yes")
+
+
+def pdf_engine() -> str:
+    """COVERAGE_PDF_ENGINE: reportlab (default, pure Python) | browser (Chromium, needs PICK3_BROWSER=on) | html.
+    'browser' without a browser falls back to reportlab."""
+    e = os.getenv("COVERAGE_PDF_ENGINE", "reportlab").strip().lower()
+    if e == "html":
+        return "html"
+    return "browser" if e == "browser" and browser_enabled() else "reportlab"
+
 
 DEFAULT_EXTRACT_MODEL = "gemini-3.5-flash"
 DEFAULT_ANALYZE_MODEL = "gemini-pro-latest"
@@ -234,14 +244,21 @@ def run(pdf_raw: bytes, *, user_id: int | None, today: date | None = None, patie
     pages = {f"{who}_보장분석_청구및제안_{today}.pdf": render.html("analysis", facts, clean, pp, warnings),
              f"{who}_맞춤보장제안_{today}.pdf": render.html("proposal", facts, clean, pp, warnings)}
     pw = (facts["customer"].get("birth_date") or "").replace("-", "")
-    if browser_enabled():
+    # HTML is the default view on the phone; PDFs of the same run are kept for sending to the customer.
+    engine = pdf_engine()
+    html_docs = {k[:-4] + ".html": v.encode("utf-8") for k, v in pages.items()}
+    pdfs: dict[str, bytes] = {}
+    if engine == "reportlab":
+        names = list(pages)
+        pdfs = {names[0]: pdf_render.analysis_pdf(facts, clean, pp, warnings),
+                names[1]: pdf_render.proposal_pdf(facts, clean, pp, warnings)}
+    elif engine == "browser":
         with _BROWSER:
-            docs = render.to_pdf(pages)
-        if encrypt and pw:
-            docs = {k: pdf_io.encrypt(v, pw) for k, v in docs.items()}
-    else:  # no server browser: deliver the same documents as HTML (phone: 공유 → 프린트 → PDF)
-        encrypt = False
-        docs = {k[:-4] + ".html": v.encode("utf-8") for k, v in pages.items()}
+            pdfs = render.to_pdf(pages)
+    if encrypt and pw:
+        pdfs = {k: pdf_io.encrypt(v, pw) for k, v in pdfs.items()}
+    encrypt = bool(pdfs) and encrypt
+    docs = {**html_docs, **pdfs}
     return {"customer": facts["customer"], "records": len(records), "extract": rep, "facts": facts,
             "analysis": raw_analysis, "plan": pp, "warnings": warnings, "docs": docs, "html": pages,
             "encrypted_with_birth_date": bool(encrypt and pw)}

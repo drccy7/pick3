@@ -30,7 +30,7 @@ class LinkError(ValueError):
 
 
 def browser_enabled() -> bool:
-    """Server-side Chromium (link reading, 보장분석 PDFs). Off unless PICK3_BROWSER=on."""
+    """Server-side Chromium (link reading; 보장분석 PDFs only with COVERAGE_PDF_ENGINE=browser). Off unless PICK3_BROWSER=on."""
     return os.getenv("PICK3_BROWSER", "off").strip().lower() in ("on", "1", "true", "yes")
 
 

@@ -41,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--encrypt", action="store_true", help="결과 PDF에 생년월일(YYYYMMDD) 암호")
     args = ap.parse_args(argv)
     _load_env()
-    os.environ.setdefault("PICK3_BROWSER", "on")  # local runs make real PDFs
+    os.environ.setdefault("PICK3_BROWSER", "on")  # only used with COVERAGE_PDF_ENGINE=browser; default is ReportLab PDF
     sys.stdout.reconfigure(encoding="utf-8")
 
     out = pathlib.Path(args.out)

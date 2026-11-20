@@ -50,11 +50,17 @@ def env() -> Environment:
     return e
 
 
-def html(kind: str, facts: dict, analysis: dict, plan: dict, warnings: list[str]) -> str:
+def lookups(facts: dict, analysis: dict, plan: dict) -> tuple[dict, dict]:
+    """(products by key, premium range by product key) shared by the HTML and ReportLab renderers."""
     prod = {p["key"]: p for p in facts["products"]}
     adds = {a["key"]: a for a in plan["adds"]}
     for g in analysis["gaps"]:  # gaps whose premium range is missing still render
         adds.setdefault(g["product_key"], premium_range(g["product_key"], facts.get("premium_table_age")) or {})
+    return prod, adds
+
+
+def html(kind: str, facts: dict, analysis: dict, plan: dict, warnings: list[str]) -> str:
+    prod, adds = lookups(facts, analysis, plan)
     css = (TPL / "base.css").read_text(encoding="utf-8")
     return env().get_template(f"{kind}.html.j2").render(
         f=facts, a=analysis, plan=plan, warnings=warnings, prod=prod, adds=adds, css=css)

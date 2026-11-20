@@ -56,6 +56,9 @@
     .bar { height: 8px; border-radius: 99px; background: var(--surface-2); margin-top: 8px; overflow: hidden; }
     .bar i { display: block; height: 100%; background: var(--accent); border-radius: 99px; transition: width .8s ease; }
     .pinfo { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--muted); margin-top: 6px; }
+    .pdfrow { margin-top: 8px; }
+    .pdfrow .pdflabel { width: 100%; color: var(--muted); font-size: 12px; }
+    .pdfrow .file { font-size: 12.5px; padding: 5px 11px; background: transparent; }
     .err { color: var(--danger); font-size: 13px; margin-top: 6px; min-height: 1em; }
     .empty { color: var(--muted); font-size: 14px; margin-top: 18px; line-height: 1.6; }
   </style>
@@ -129,8 +132,15 @@
       const meta = [`${day(r.created_at)} 저장`, r.size_bytes ? `${(r.size_bytes / 1048576).toFixed(1)}MB` : "",
                     r.encrypted ? "🔒 암호 PDF" : "", r.records_count != null ? `병의원 기록 ${r.records_count}건` : "",
                     r.analyzed_at ? `작성 ${day(r.analyzed_at)}` : "", usageText(r.usage)].filter(Boolean).join(" · ");
-      const files = (r.files || []).map((f) =>
-        `<button class="file" type="button" data-id="${r.id}" data-i="${f.index}" data-name="${esc(f.name)}">📄 ${f.name.includes("맞춤") ? "제안서" : "분석서"}</button>`).join("");
+      // HTML opens for reading on the phone; the PDFs of the same run (birth-date password) are for sending.
+      const kind = (f) => (f.name.includes("맞춤") ? "제안서" : "분석서");
+      const btn = (f, label) =>
+        `<button class="file" type="button" data-id="${r.id}" data-i="${f.index}" data-name="${esc(f.name)}">${label}</button>`;
+      const all = r.files || [];
+      const htmls = all.filter((f) => !f.name.endsWith(".pdf")), pdfs = all.filter((f) => f.name.endsWith(".pdf"));
+      const files = htmls.map((f) => btn(f, `📄 ${kind(f)}`)).join("");
+      const pdfRow = pdfs.length ? `<div class="row pdfrow"><span class="pdflabel">PDF 받기 (고객 전송용 · 암호 생년월일)</span>` +
+        pdfs.map((f) => btn(f, `${kind(f)} PDF`)).join("") + `</div>` : "";
       return `<article class="card ${running ? "running" : ""}" data-id="${r.id}">
         <div class="name">${esc(title)}</div>
         <div class="meta">${esc(meta)}</div>
@@ -140,6 +150,7 @@
           <button class="btn" type="submit">${(r.files || []).length ? "다시 작성" : "제안서 작성"}</button>
         </form><div class="err" data-err="${r.id}"></div>`}
         <div class="row">${files}${running ? "" : `<button class="del" type="button" data-id="${r.id}">삭제</button>`}</div>
+        ${pdfRow}
       </article>`;
     }
 
