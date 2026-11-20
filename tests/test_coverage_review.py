@@ -227,3 +227,33 @@ def test_early_second_generation_fixed_deductible_and_contract_cap() -> None:
     est = F.build(_with_indemnity_start("2011-05", cap_manwon=25), recs, TODAY)["indemnity_estimate"]
     big = next(r for r in est["rows"] if r["date"] == "2025-06-20")
     assert big["generation"] == "2세대(초기)" and big["estimate"] == 250_000  # 400,000 - 20,000, capped at 25만
+
+
+def test_diagnoses_from_nhis_rows_feed_facts_and_documents() -> None:
+    import copy
+    recs = copy.deepcopy(RECORDS)
+    for r in recs:
+        if r["provider"] == "동네의원":
+            r.update(diagnosis_code="I109", diagnosis_name="고혈압", visit_type="외래", care_days=1)
+        if r["provider"] == "동네약국":
+            r.update(visit_type="약국", care_days=60)
+    f = F.build(REPORT, recs, TODAY)
+    d = f["diagnoses"][0]
+    assert d["id"] == "D1" and d["code"] == "I109" and d["visits"] == 9 and d["within_5_years"]
+    assert f["recurring"][0]["diagnoses"] == ["고혈압(I109)"] and f["recurring"][0]["max_supply_days"] == 60
+    assert "의증" in f["diagnosis_note"]
+    a, warns = plan.sanitize({**_analysis(), "cautions": ["고혈압 고지"]}, f)
+    a["claims"][0]["evidence"].append("D1")
+    a2, w2 = plan.sanitize(a, f)
+    assert "D1" in a2["claims"][0]["evidence"]
+    p = plan.premium_plan(f, a2)
+    assert "고혈압(I109)" in render.html("analysis", f, a2, p, w2)
+    from coverage_review import pdf_render, pdf_io
+    import io, pdfplumber
+    with pdfplumber.open(io.BytesIO(pdf_render.analysis_pdf(f, a2, p, w2))) as pdf:
+        assert "I109" in "".join(pg.extract_text() or "" for pg in pdf.pages)
+
+
+def test_no_diagnoses_without_nhis_data() -> None:
+    f = F.build(REPORT, RECORDS, TODAY)
+    assert f["diagnoses"] == [] and f["diagnosis_note"] is None

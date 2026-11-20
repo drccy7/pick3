@@ -97,7 +97,7 @@ def _list() -> list[dict]:
 def test_shared_encrypted_pdf_is_only_stored(monkeypatch, store) -> None:
     seen = _fake(monkeypatch, SCREEN)
     res = _share(_pdf("20000101"))
-    assert res["status"] == "saved" and res["service"] == "coverage" and "제안서 작성" in res["message"]
+    assert res["status"] == "saved" and res["service"] == "coverage" and "암호" in res["message"]
     assert seen["gemini"] == [] and store.runs == []
     r = _list()[0]
     assert r["encrypted"] and r["status"] == "stored" and not r["has_extract"] and r["files"] == []

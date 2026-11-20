@@ -30,6 +30,7 @@
 <tr><td>실손 기간 전후</td><td>실손 적용 기간: {{ f.records.with_indemnity.count }}건 {{ f.records.with_indemnity.amount|won }}원 / 실손 없는 기간: {{ f.records.without_indemnity.count }}건 {{ f.records.without_indemnity.amount|won }}원
 {% for ip in f.indemnity_periods %}<br>실손 계약 {{ ip.contract }}: {{ ip.start }}~{{ ip.end or '' }}{% endfor %}</td></tr>
 <tr><td>정기 진료</td><td>{% for r in f.recurring %}[{{ r.id }}] {{ r.provider }}: {{ r.from }}~{{ r.to }} 중 {{ r.months }}개월 방문, 중앙값 {{ r.median_amount|won }}원{% if r.same_day_pharmacy_visits %}, 같은 날 약국 {{ r.same_day_pharmacy_visits }}회(중앙값 {{ r.pharmacy_median|won }}원){% endif %}<br>{% else %}없음{% endfor %}</td></tr>
+{% if f.diagnoses %}<tr><td>진단명<br><span class="small">요양급여내역</span></td><td>{% for d in f.diagnoses[:8] %}[{{ d.id }}] {{ d.name }}({{ d.code }}) {{ d.visits }}회 {{ d.first }}~{{ d.last }}{% if d.inpatient_visits %} · 입원 {{ d.inpatient_visits }}{% endif %}<br>{% endfor %}<span class="small">{{ f.diagnosis_note }}</span></td></tr>{% endif %}
 <tr><td>큰 진료 묶음</td><td>{% for k in f.clusters %}[{{ k.id }}] {{ k.provider }} {{ k.first }}~{{ k.last }} {{ k.visits }}회 {{ k.total|won }}원{% if k.expired %} <span class="small">(청구기한 경과)</span>{% endif %}<br>{% endfor %}</td></tr>
 </table>
 

@@ -47,7 +47,7 @@ from pydantic import BaseModel, field_validator
 try:
     from .providers import ProviderType, SituationType, get_kakao_diag, get_recommendations
     from .reels_script import build_reels_script
-    from . import auth_pin, link_render, medical, prescriptions, screen_router
+    from . import auth_pin, link_render, medical, nhis_claims, prescriptions, screen_router
     from .coverage_review import pdf_io as cov_pdf, service as cov_service, store as cov_store
     from .coverage_review import gemini as cov_gemini
     from . import gemini_usage
@@ -70,6 +70,7 @@ except ImportError:
     from reels_script import build_reels_script
     import auth_pin
     import link_render
+    import nhis_claims
     from coverage_review import pdf_io as cov_pdf, service as cov_service, store as cov_store
     from coverage_review import gemini as cov_gemini
     import gemini_usage
@@ -428,10 +429,13 @@ async def _store_coverage(user: dict, raw: bytes, filename: str | None, encrypte
     except cov_store.StoreError as exc:
         return {"status": "error", "service": "coverage", "message": "❌ 보장분석 보고서를 저장하지 못했습니다.",
                 "detail": str(exc)}
-    lines = ["📋 보장분석 보고서를 저장했습니다."]
     if encrypted:
-        lines.append("🔒 암호가 걸린 PDF입니다. 작성할 때 암호(보통 생년월일 8자리)를 함께 넣어 주세요.")
-    lines.append("제안서는 Pick3 → 📋 보장분석에서 [제안서 작성]을 눌러 시작하세요.")
+        lines = ["🔒 암호가 걸린 PDF를 저장했습니다.",
+                 "Pick3 → 📋 보장분석에서 암호를 넣어 주세요(보통 생년월일).",
+                 "보장분석 보고서면 제안서를, 요양급여내역·의료비 PDF면 의료비 기록으로 처리합니다."]
+    else:
+        lines = ["📋 보장분석 보고서를 저장했습니다.",
+                 "제안서는 Pick3 → 📋 보장분석에서 [제안서 작성]을 눌러 시작하세요."]
     return {"status": "saved", "service": "coverage", "report_id": row["id"], "message": "\n".join(lines)}
 
 
@@ -857,7 +861,10 @@ async def ingest_medical(
 
 
 async def _save_medical_document(user: dict, raw: bytes, mime: str, chosen: str, filename: str | None) -> dict:
-    """A medical document (PDF or image): 처방조제정보 -> prescriptions, else payments (-> prescriptions)."""
+    """A medical document (PDF or image): 요양급여내역 -> visits with 진단명, 처방조제정보 -> prescriptions,
+    else payments (-> prescriptions)."""
+    if mime == "application/pdf" and nhis_claims.is_nhis_pdf(raw):  # 건강보험 요양급여내역 (standard form)
+        return await _save_nhis(user, raw, chosen)
     if prescriptions.is_prescription_pdf(raw):  # 처방조제정보 PDF -> its own table
         result = await _save_prescriptions(user, raw, mime, chosen, filename=filename)
         result["service"] = "prescription"
@@ -878,6 +885,24 @@ async def _save_medical_document(user: dict, raw: bytes, mime: str, chosen: str,
             return rx
         result["message"] += "\n" + _received_note(raw, mime, filename)
     return result
+
+
+async def _save_nhis(user: dict, raw: bytes, chosen: str = "") -> dict:
+    try:
+        parsed = nhis_claims.parse(raw)
+    except Exception as exc:
+        return {"status": "error", "service": "medical", "message": "❌ 요양급여내역을 읽지 못했습니다.",
+                "detail": f"{type(exc).__name__}: {str(exc)[:200]}"}
+    patient = (chosen or parsed["patient"]).strip()[:40]
+    if not parsed["rows"]:
+        return {"status": "not_found", "service": "medical", "message": "요양급여내역에서 진료 내역을 찾지 못했습니다."}
+    try:
+        counts = await nhis_claims.save(parsed, user["id"], patient)
+    except StorageError as exc:
+        hint = " (DB에 진단명 칸이 없습니다: migration 008 실행 필요)" if "column" in str(exc) else ""
+        return {"status": "error", "service": "medical", "message": "❌ 저장 실패" + hint, "detail": str(exc)}
+    return {"status": "saved", "service": "medical", "message": nhis_claims.summary_message(parsed, patient, counts),
+            "count": len(parsed["rows"]), **counts}
 
 
 def _received_note(raw: bytes, mime: str, filename: str | None) -> str:

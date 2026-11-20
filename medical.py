@@ -166,7 +166,8 @@ async def list_medical_records(user_id: int | None, patient: str = "", year: int
     endpoint, headers = _sb()
     params = {
         "user_id": f"eq.{user_id}" if user_id is not None else "is.null",
-        "select": "id,patient,provider,kind,amount,visit_date,source,created_at",
+        "select": "id,patient,provider,kind,amount,visit_date,source,created_at,"
+                  "diagnosis_code,diagnosis_name,visit_type,care_days",
         "order": "visit_date.desc,id.desc",
         "limit": "2000",
     }
@@ -179,6 +180,10 @@ async def list_medical_records(user_id: int | None, patient: str = "", year: int
             resp = await client.get(endpoint, headers=headers, params=params)
     except Exception as exc:
         raise StorageError(f"Supabase 연결 실패: {type(exc).__name__}: {exc}") from exc
+    if resp.status_code == 400 and "diagnosis_code" in resp.text:  # migration 008 not run yet
+        params["select"] = "id,patient,provider,kind,amount,visit_date,source,created_at"
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.get(endpoint, headers=headers, params=params)
     if resp.status_code != 200:
         raise StorageError(f"Supabase select HTTP {resp.status_code}: {resp.text[:200]}")
     return resp.json()

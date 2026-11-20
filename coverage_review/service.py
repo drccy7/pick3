@@ -55,11 +55,15 @@ def fetch_records(patient: str, user_id: int | None) -> list[dict]:
     """This account's 병의원 rows for the customer name (spaces ignored). Never crosses accounts."""
     from .store import _conf
     url, h = _conf()
-    params = {"select": "provider,kind,amount,visit_date,patient", "order": "visit_date", "limit": "5000",
+    params = {"select": "provider,kind,amount,visit_date,patient,diagnosis_code,diagnosis_name,visit_type,care_days",
+              "order": "visit_date", "limit": "5000",
               "patient": f"ilike.*{'*'.join(patient.split())}*" if " " in patient.strip() else f"eq.{patient.strip()}"}
     if user_id is not None:
         params["user_id"] = f"eq.{user_id}"
     r = httpx.get(f"{url}/rest/v1/pick3_medical_records", params=params, timeout=30, headers=h)
+    if r.status_code == 400 and "diagnosis_code" in r.text:  # migration 008 not run yet
+        params["select"] = "provider,kind,amount,visit_date,patient"
+        r = httpx.get(f"{url}/rest/v1/pick3_medical_records", params=params, timeout=30, headers=h)
     r.raise_for_status()
     return r.json()
 

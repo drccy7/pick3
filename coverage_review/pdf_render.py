@@ -267,6 +267,13 @@ def analysis_pdf(facts: dict, analysis: dict, plan: dict, warnings: list[str]) -
     rows = [[P("연도별", s.td), P(by_year, s.td)], [P("기관 종류별", s.td), P(by_type, s.td)],
             [P("실손 기간 전후", s.td), P(ind, s.td)], [P("정기 진료", s.td), P(recur, s.td)],
             [P("큰 진료 묶음", s.td), P(clus, s.td)]]
+    if f.get("diagnoses"):  # from the 건강보험 요양급여내역 (may include 의증/배제상병)
+        dx = "<br/>".join(
+            f"[{e(d['id'])}] {e(d.get('name'))}({e(d['code'])}) {e(d['visits'])}회 {e(d['first'])}~{e(d['last'])}"
+            + (f" · 입원 {e(d['inpatient_visits'])}" if d.get("inpatient_visits") else "")
+            for d in f["diagnoses"][:8])
+        dx += f'<br/><font color="#5b6475" size="8">{e(f.get("diagnosis_note") or "")}</font>'
+        rows.insert(4, [P("진단명<br/><font size='8'>요양급여내역</font>", s.td), P(dx, s.td)])
     out.append(grid(rows, [0.22 * W, 0.78 * W], header=False))
 
     # 3. 청구할 만한 내용

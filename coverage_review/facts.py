@@ -163,7 +163,10 @@ def normalize_records(records: list[dict], rules: dict) -> list[dict]:
             continue
         p = str(r.get("provider") or "").strip()
         out.append({"id": f"R{i + 1}", "date": d, "provider": p, "amount": int(r["amount"]),
-                    "type": provider_type(p, str(r.get("kind") or ""), rules)})
+                    "type": provider_type(p, str(r.get("kind") or ""), rules),
+                    # from the 건강보험 요양급여내역 when shared (may include 의증/배제상병)
+                    "dx_code": r.get("diagnosis_code"), "dx_name": r.get("diagnosis_name"),
+                    "visit_type": r.get("visit_type"), "care_days": r.get("care_days")})
     return out
 
 
@@ -200,7 +203,8 @@ def clusters(recs: list[dict], contracts: list[dict], today: date, rules: dict) 
                     in_force.append({"contract": c["id"], "insurer": c["insurer"], "coverage": v["name"],
                                      "category": v["category"], "amount": v["amount"],
                                      "same_month_as_start": c["start"] == ym})
-        out.append({"provider": g[0]["provider"], "type": g[0]["type"], "first": g[0]["date"].isoformat(),
+        out.append({"diagnoses": _dx_list(g), "inpatient": any(r.get("visit_type") == "입원" for r in g),
+                    "provider": g[0]["provider"], "type": g[0]["type"], "first": g[0]["date"].isoformat(),
                     "last": g[-1]["date"].isoformat(), "visits": len(g), "total": total,
                     "largest": {"date": top["date"].isoformat(), "amount": top["amount"], "id": top["id"]},
                     "records": [r["id"] for r in g], "deadline": deadline.isoformat(),
@@ -208,6 +212,31 @@ def clusters(recs: list[dict], contracts: list[dict], today: date, rules: dict) 
     out.sort(key=lambda k: -k["total"])
     for i, k in enumerate(out, 1):
         k["id"] = f"K{i}"
+    return out
+
+
+def _dx_list(rs: list[dict]) -> list[str]:
+    return sorted({f"{r['dx_name']}({r['dx_code']})" for r in rs if r.get("dx_code")})
+
+
+def diagnoses(recs: list[dict], today: date) -> list[dict]:
+    """One entry per 상병코드 from the 요양급여내역 rows: visits, dates, providers, 입원, recent (≤5y) flag."""
+    by: dict[str, list[dict]] = defaultdict(list)
+    for r in recs:
+        if r.get("dx_code"):
+            by[r["dx_code"]].append(r)
+    out = []
+    for code, rs in sorted(by.items(), key=lambda x: -len(x[1])):
+        rs.sort(key=lambda r: r["date"])
+        out.append({"code": code, "name": rs[0].get("dx_name"), "visits": len(rs),
+                    "first": rs[0]["date"].isoformat(), "last": rs[-1]["date"].isoformat(),
+                    "inpatient_visits": sum(1 for r in rs if r.get("visit_type") == "입원"),
+                    "providers": sorted({r["provider"] for r in rs})[:5],
+                    "within_3_months": (today - rs[-1]["date"]).days <= 92,
+                    "within_5_years": (today - rs[-1]["date"]).days <= 5 * 366,
+                    "records": [r["id"] for r in rs]})
+    for i, d in enumerate(out, 1):
+        d["id"] = f"D{i}"
     return out
 
 
@@ -231,7 +260,9 @@ def recurring(recs: list[dict], rules: dict) -> list[dict]:
         if len(months) < cfg["min_months"] or rs[0]["type"] == "약국":
             continue
         same_day = [ph for r in rs for ph in pharmacy_days.get(r["date"], [])]
-        out.append({"provider": p, "type": rs[0]["type"], "months": len(months), "visits": len(rs),
+        out.append({"diagnoses": _dx_list(rs),
+                    "max_supply_days": max((ph.get("care_days") or 0 for ph in same_day), default=0) or None,
+                    "provider": p, "type": rs[0]["type"], "months": len(months), "visits": len(rs),
                     "from": months[0], "to": months[-1], "median_amount": int(statistics.median(r["amount"] for r in rs)),
                     "same_day_pharmacy_visits": len(same_day),
                     "pharmacy_median": int(statistics.median(x["amount"] for x in same_day)) if same_day else None,
@@ -410,6 +441,9 @@ def build(report: dict, records: list[dict], today: date, rules: dict | None = N
         "clusters": clusters(recs, contracts, today, rules),
         "recurring": recurring(recs, rules),
         "indemnity_estimate": indemnity_estimate(recs, periods, today, rules),
+        "diagnoses": diagnoses(recs, today),
+        "diagnosis_note": "상병명은 요양기관 청구용 코드라 의증·배제상병이 포함될 수 있음(확진 아님)"
+                          if any(r.get("dx_code") for r in recs) else None,
         "products": products,
         "over_coverage": over,
         "blank_contracts": blank,
