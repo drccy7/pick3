@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f1115" />
+  <meta name="referrer" content="no-referrer" />
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <title>보장분석</title>
+  <style>
+    :root {
+      --bg: #0f1115; --surface: #181c24; --surface-2: #222733; --border: #2c3342;
+      --text: #f3f5f8; --muted: #9aa3b2; --accent: #ff6b35; --danger: #ff8a8a; --ok: #7ee2a8;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    body {
+      background: var(--bg); color: var(--text); min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, "Pretendard", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+      padding: 20px 16px 48px; max-width: 560px; margin: 0 auto; line-height: 1.45;
+    }
+    a { color: inherit; }
+    .home { color: var(--muted); text-decoration: none; font-size: 14px; }
+    h1 { font-size: 22px; font-weight: 800; margin-top: 10px; }
+    .sub { color: var(--muted); font-size: 13px; margin-top: 4px; }
+    .list { margin-top: 14px; display: grid; gap: 10px; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 13px 14px; }
+    .card .name { font-size: 16px; font-weight: 700; }
+    .card .meta { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+    .card .msg { white-space: pre-line; font-size: 13.5px; margin-top: 8px; }
+    .card.running .msg::before {
+      content: ""; display: inline-block; width: 12px; height: 12px; margin-right: 8px; vertical-align: -1px;
+      border: 2px solid var(--muted); border-top-color: var(--accent); border-radius: 50%; animation: spin .9s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .card.running .msg::before { animation: none; } }
+    .row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; align-items: center; }
+    input[type=password] {
+      font: inherit; font-size: 16px; color: var(--text); background: var(--surface-2); flex: 1; min-width: 0;
+      border: 1px solid var(--border); border-radius: 10px; padding: 9px 11px;
+    }
+    .btn {
+      font: inherit; font-size: 14px; font-weight: 700; color: #fff; background: var(--accent);
+      border: 0; border-radius: 10px; padding: 9px 14px;
+    }
+    .btn:disabled { opacity: .6; }
+    .file, .del {
+      font: inherit; font-size: 13px; color: var(--text); background: var(--surface-2);
+      border: 1px solid var(--border); border-radius: 999px; padding: 6px 12px;
+    }
+    .del { color: var(--danger); background: transparent; margin-left: auto; }
+    .err { color: var(--danger); font-size: 13px; margin-top: 6px; min-height: 1em; }
+    .empty { color: var(--muted); font-size: 14px; margin-top: 18px; line-height: 1.6; }
+  </style>
+</head>
+<body>
+  <a class="home" href="./">← 홈</a>
+  <h1>📋 보장분석</h1>
+  <p class="sub">보장분석 보고서 PDF를 단축어로 공유하면 여기에 저장됩니다. 고객의 병의원 기록(같은 이름)과 대조해
+    청구할 만한 내용과 보완 제안서를 만듭니다.</p>
+  <p class="sub" id="state">불러오는 중…</p>
+  <div class="list" id="list"></div>
+
+  <script src="account.js"></script>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+    const day = (s) => (s || "").slice(0, 10);
+    let timer = null;
+
+    function card(r) {
+      const running = r.status === "running";
+      const needPw = r.encrypted && !r.has_extract;
+      const title = r.customer_name ? `${r.customer_name} 님` : (r.filename || "보장분석 보고서");
+      const meta = [`${day(r.created_at)} 저장`, r.size_bytes ? `${(r.size_bytes / 1048576).toFixed(1)}MB` : "",
+                    r.encrypted ? "🔒 암호 PDF" : "", r.records_count != null ? `병의원 기록 ${r.records_count}건` : "",
+                    r.analyzed_at ? `작성 ${day(r.analyzed_at)}` : ""].filter(Boolean).join(" · ");
+      const files = (r.files || []).map((f) =>
+        `<button class="file" type="button" data-id="${r.id}" data-i="${f.index}" data-name="${esc(f.name)}">📄 ${f.name.includes("맞춤") ? "제안서" : "분석서"}</button>`).join("");
+      return `<article class="card ${running ? "running" : ""}" data-id="${r.id}">
+        <div class="name">${esc(title)}</div>
+        <div class="meta">${esc(meta)}</div>
+        ${r.message || running ? `<div class="msg">${esc(r.message || "작성 중…")}</div>` : ""}
+        ${running ? "" : `<form class="row run" data-id="${r.id}">
+          ${needPw ? `<input type="password" inputmode="numeric" autocomplete="off" placeholder="PDF 암호(보통 생년월일 8자리)" required />` : ""}
+          <button class="btn" type="submit">${(r.files || []).length ? "다시 작성" : "제안서 작성"}</button>
+        </form><div class="err" data-err="${r.id}"></div>`}
+        <div class="row">${files}${running ? "" : `<button class="del" type="button" data-id="${r.id}">삭제</button>`}</div>
+      </article>`;
+    }
+
+    async function load() {
+      clearTimeout(timer);
+      await Pick3Account.ready;
+      const token = Pick3Account.getToken();
+      if (!token) { $("state").innerHTML = '계정이 없습니다. <a href="./">홈</a>에서 들어가 주세요.'; return; }
+      // Don't redraw while a password is being typed.
+      if (document.activeElement && document.activeElement.tagName === "INPUT") { timer = setTimeout(load, 3000); return; }
+      let data;
+      try {
+        const res = await fetch(`${Pick3Account.API}/api/coverage`, { headers: { "X-Pick3-Token": token } });
+        if (res.status === 401) { $("state").innerHTML = '로그인이 필요합니다. <a href="./">홈</a>에서 다시 들어가 주세요.'; return; }
+        data = await res.json();
+        if (!res.ok) throw new Error(data.detail || res.status);
+      } catch (e) {
+        $("state").textContent = "불러오지 못했습니다. 서버가 깨어나는 중이면 30초 뒤 새로고침해 주세요.";
+        return;
+      }
+      const rows = data.reports || [];
+      $("state").textContent = rows.length ? `보고서 ${rows.length}건` : "";
+      $("list").innerHTML = rows.length ? rows.map(card).join("") :
+        '<p class="empty">아직 저장된 보고서가 없습니다.<br>카톡 등에서 보장분석 PDF → 공유 → <b>Pick3</b> 를 고르세요.</p>';
+      if (rows.some((r) => r.status === "running")) timer = setTimeout(load, 3000);
+    }
+
+    $("list").addEventListener("submit", async (e) => {
+      const form = e.target.closest(".run");
+      if (!form) return;
+      e.preventDefault();
+      const id = form.dataset.id, input = form.querySelector("input"), btn = form.querySelector("button");
+      const err = document.querySelector(`[data-err="${id}"]`);
+      btn.disabled = true; err.textContent = "";
+      try {
+        const res = await fetch(`${Pick3Account.API}/api/coverage/${id}/run`, {
+          method: "POST", headers: { "Content-Type": "application/json", "X-Pick3-Token": Pick3Account.getToken() },
+          body: JSON.stringify({ password: input ? input.value : "" }),
+        });
+        const d = await res.json().catch(() => ({}));
+        if (!d.ok) { err.textContent = d.message || d.detail || "시작하지 못했습니다."; btn.disabled = false; return; }
+      } catch { err.textContent = "서버에 연결하지 못했습니다."; btn.disabled = false; return; }
+      if (input) input.blur();
+      load();
+    });
+
+    $("list").addEventListener("click", async (e) => {
+      const f = e.target.closest(".file");
+      if (f) {
+        const win = window.open("", "_blank");  // open now: Safari blocks pop-ups opened after an await
+        try {
+          const res = await fetch(`${Pick3Account.API}/api/coverage/${f.dataset.id}/files/${f.dataset.i}`,
+                                  { headers: { "X-Pick3-Token": Pick3Account.getToken() } });
+          if (!res.ok) throw new Error(res.status);
+          const type = f.dataset.name.endsWith(".html") ? "text/html" : "application/pdf";
+          const url = URL.createObjectURL(new File([await res.blob()], f.dataset.name, { type }));
+          if (win) win.location.href = url;
+          else { const a = document.createElement("a"); a.href = url; a.download = f.dataset.name; a.click(); }
+        } catch {
+          if (win) win.close();
+          alert("파일을 받지 못했습니다. 잠시 후 다시 해 주세요.");
+        }
+        return;
+      }
+      const d = e.target.closest(".del");
+      if (!d || !confirm("이 보고서와 만든 결과를 모두 지울까요?")) return;
+      const res = await fetch(`${Pick3Account.API}/api/coverage/${d.dataset.id}`, {
+        method: "DELETE", headers: { "X-Pick3-Token": Pick3Account.getToken() },
+      }).catch(() => null);
+      const body = res ? await res.json().catch(() => ({})) : {};
+      if (!res || !res.ok || body.ok === false) { alert(body.message || "지우지 못했습니다."); return; }
+      load();
+    });
+
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
+    load();
+  </script>
+</body>
+</html>

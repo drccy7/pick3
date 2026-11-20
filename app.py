@@ -12,6 +12,7 @@ if sys.stdout is not None and hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
+import asyncio
 import collections
 import os
 
@@ -32,13 +33,13 @@ _load_local_env(Path(__file__).resolve().parent / ".env")
 
 import re
 import secrets
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
 
@@ -46,6 +47,7 @@ try:
     from .providers import ProviderType, SituationType, get_kakao_diag, get_recommendations
     from .reels_script import build_reels_script
     from . import auth_pin, link_render, medical, prescriptions, screen_router
+    from .coverage_review import pdf_io as cov_pdf, service as cov_service, store as cov_store
     from .saved_places import (
         StorageError,
         bump_usage,
@@ -65,6 +67,7 @@ except ImportError:
     from reels_script import build_reels_script
     import auth_pin
     import link_render
+    from coverage_review import pdf_io as cov_pdf, service as cov_service, store as cov_store
     import medical
     import prescriptions
     import screen_router
@@ -147,6 +150,7 @@ async def manifest() -> FileResponse:
 @app.get("/prescriptions.html")
 @app.get("/start.html")
 @app.get("/saved.html")
+@app.get("/coverage.html")
 async def extra_page(request: Request) -> FileResponse:
     """Serve the service pages next to the index.html launcher (Render origin)."""
     path = BASE_DIR / request.url.path.lstrip("/")
@@ -295,6 +299,9 @@ def _daily_limits(user: dict) -> tuple[int, int]:
     return int(per_user), total
 
 
+MAX_PDF_BYTES = 40 * 1024 * 1024
+
+
 @app.post("/api/ingest/screenshot")
 async def ingest_screenshot(
     background: BackgroundTasks,
@@ -305,8 +312,11 @@ async def ingest_screenshot(
     raw = await image.read()
     if not raw:
         raise HTTPException(status_code=400, detail="Empty image upload")
-    if len(raw) > medical.MAX_UPLOAD_BYTES:
-        return {"status": "error", "message": "❌ 파일이 너무 큽니다(15MB 초과). 쪽을 나눠 보내 주세요."}
+    is_pdf = raw[:5] == b"%PDF-"
+    # 보장분석 PDFs go to Gemini via the File API (no inline limit): allow them up to 40 MB.
+    if len(raw) > (MAX_PDF_BYTES if is_pdf else medical.MAX_UPLOAD_BYTES):
+        limit = "40MB" if is_pdf else "15MB"
+        return {"status": "error", "message": f"❌ 파일이 너무 큽니다({limit} 초과). 쪽을 나눠 보내 주세요."}
     link, text_note = _shared_text(raw, image.content_type)
     if text_note:  # a link we can't open, or plain text: no Gemini, no usage
         return {"status": "unsupported", "service": "none", "message": text_note}
@@ -332,7 +342,12 @@ async def ingest_screenshot(
     # One Shortcut for every service: classify first, then use that service's own extractor.
     mime = medical.sniff_mime(raw, image.content_type or "image/jpeg")
     if mime == "application/pdf":
-        # PDFs are medical documents (처방조제정보, 진료비 영수증); no restaurant arrives as a PDF.
+        encrypted = cov_pdf.is_encrypted(raw)
+        if encrypted or cov_service.is_coverage_report(raw):  # 보장분석: store only, the user starts it on Pick3
+            return await _store_coverage(user, raw, image.filename, encrypted)
+        if len(raw) > medical.MAX_UPLOAD_BYTES:  # medical PDFs are sent inline to Gemini
+            return {"status": "error", "message": "❌ 의료비·처방 PDF가 너무 큽니다(15MB 초과). 쪽을 나눠 보내 주세요."}
+        # Other PDFs are medical documents (처방조제정보, 진료비 영수증); no restaurant arrives as a PDF.
         result = await _save_medical_document(user, raw, mime, "", image.filename)
         if result["service"] == "medical":
             result["message"] = "🧾 의료비 기록\n" + result["message"]
@@ -362,9 +377,11 @@ async def ingest_screenshot(
 _JOBS: dict[object, "collections.deque[dict]"] = {}
 
 
-def _new_job(user: dict, link: str) -> dict:
-    job = {"id": secrets.token_hex(4), "kind": "link", "status": "running",
-           "site": urlsplit(link).hostname or "", "started": _kst_now(), "message": "페이지를 여는 중…"}
+def _new_job(user: dict, link: str = "", *, kind: str = "link", site: str | None = None,
+             status: str = "running", message: str = "페이지를 여는 중…") -> dict:
+    job = {"id": secrets.token_hex(4), "kind": kind, "status": status,
+           "site": site if site is not None else (urlsplit(link).hostname or ""), "started": _kst_now(),
+           "message": message}
     _JOBS.setdefault(user.get("id"), collections.deque(maxlen=5)).append(job)
     return job
 
@@ -381,6 +398,176 @@ async def _run_link_job(user: dict, link: str, job: dict) -> None:
         result = {"status": "error", "message": f"❌ 처리 중 오류: {type(exc).__name__}"}
     job.update(status="done" if result.get("status") == "saved" else "error", message=result.get("message", ""),
                finished=_kst_now())
+
+
+# ---- 보장분석: shared PDFs are only stored; the user starts the proposal on coverage.html --------------
+_MEDIA = {"pdf": "application/pdf", "html": "text/html; charset=utf-8"}
+_COV_ACTIVE: dict[int, str] = {}  # report id -> progress line, for runs in this process
+
+
+async def _store_coverage(user: dict, raw: bytes, filename: str | None, encrypted: bool) -> dict:
+    path = f"{user.get('id')}/{secrets.token_hex(8)}/original.pdf"
+    try:
+        await cov_store.put_file(path, raw)
+        row = await cov_store.create(user.get("id"), filename or "보장분석.pdf", len(raw), encrypted, path)
+    except cov_store.StoreError as exc:
+        return {"status": "error", "service": "coverage", "message": "❌ 보장분석 보고서를 저장하지 못했습니다.",
+                "detail": str(exc)}
+    lines = ["📋 보장분석 보고서를 저장했습니다."]
+    if encrypted:
+        lines.append("🔒 암호가 걸린 PDF입니다. 작성할 때 암호(보통 생년월일 8자리)를 함께 넣어 주세요.")
+    lines.append("제안서는 Pick3 → 📋 보장분석에서 [제안서 작성]을 눌러 시작하세요.")
+    return {"status": "saved", "service": "coverage", "report_id": row["id"], "message": "\n".join(lines)}
+
+
+def _store_failed(exc: Exception) -> HTTPException:
+    return HTTPException(status_code=503, detail=f"보장분석 저장소 문제: {exc}")
+
+
+@app.get("/api/coverage")
+async def coverage_list(x_pick3_token: Optional[str] = Header(default=None)) -> dict:
+    user = await _current_user(x_pick3_token)
+    try:
+        rows = await cov_store.list_reports(user["id"])
+    except cov_store.StoreError as exc:
+        raise _store_failed(exc)
+    for r in rows:
+        r["has_extract"] = bool(r.pop("extract_ready", None))
+        if r["status"] == "running":
+            if r["id"] in _COV_ACTIVE:
+                r["message"] = _COV_ACTIVE[r["id"]]
+            else:
+                r["status"], r["message"] = "error", "중단됐습니다(서버가 다시 시작됨). 다시 작성해 주세요."
+        r["files"] = [{"index": i, "name": f["name"]} for i, f in enumerate(r.pop("results") or [])]
+    return {"reports": rows}
+
+
+class CoverageRun(BaseModel):
+    password: str = ""
+
+
+@app.post("/api/coverage/{report_id}/run")
+async def coverage_run(report_id: int, body: CoverageRun, background: BackgroundTasks,
+                       x_pick3_token: Optional[str] = Header(default=None)) -> dict:
+    user = await _current_user(x_pick3_token)
+    if report_id in _COV_ACTIVE:
+        return {"ok": False, "message": "이미 작성 중입니다."}
+    try:
+        row = await cov_store.get(user["id"], report_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="보고서가 없습니다.")
+        raw = b""
+        if not row.get("extract"):  # first run: the PDF must be read (password needed if encrypted)
+            raw = await cov_store.get_file(row["storage_path"])
+            if row["encrypted"]:
+                if not body.password.strip():
+                    return {"ok": False, "need_password": True, "message": "PDF 암호를 넣어 주세요."}
+                try:
+                    raw = cov_pdf.decrypt(raw, body.password.strip())
+                except cov_pdf.PdfPasswordError:
+                    return {"ok": False, "need_password": True, "message": "암호가 맞지 않습니다."}
+            if not cov_service.is_coverage_report(raw):
+                _COV_ACTIVE[report_id] = "🧾 보장분석 보고서가 아니어서 의료비·처방 문서로 읽는 중…"
+                await cov_store.update(user["id"], report_id, status="running", message="")
+                background.add_task(_coverage_as_medical, user, row, raw)
+                return {"ok": True, "message": _COV_ACTIVE[report_id]}
+    except cov_store.StoreError as exc:
+        raise _store_failed(exc)
+    usage = await bump_usage(user["id"])
+    per_user_limit, _ = _daily_limits(user)
+    if usage["user_count"] > per_user_limit:
+        return {"ok": False, "message": f"오늘 분석 한도({per_user_limit}건)를 넘었습니다. 내일 다시 시도해 주세요."}
+    _COV_ACTIVE[report_id] = "📋 시작…"
+    await cov_store.update(user["id"], report_id, status="running", message="")
+    background.add_task(_run_coverage, user, row, raw)
+    return {"ok": True, "message": "제안서 작성을 시작했습니다(2~4분)."}
+
+
+async def _run_coverage(user: dict, row: dict, raw: bytes) -> None:
+    rid, uid = row["id"], user["id"]
+
+    def progress(step: str) -> None:
+        _COV_ACTIVE[rid] = f"📋 {step}…"
+    try:
+        res = await asyncio.to_thread(cov_service.run, raw, user_id=uid, rep=row.get("extract"), progress=progress)
+        _COV_ACTIVE[rid] = "📋 결과 저장 중…"
+        base = row["storage_path"].rsplit("/", 1)[0]
+        results = []
+        for i, (name, data) in enumerate(res["docs"].items()):
+            ext = name.rsplit(".", 1)[-1]
+            path = f"{base}/result_{i}.{ext}"
+            await cov_store.put_file(path, data, _MEDIA[ext])
+            results.append({"name": name, "path": path})
+        c, a, pp = res["customer"], res["analysis"], res["plan"]
+        lines = [f"계약 {len(res['facts']['contracts'])}건 · 병의원 기록 {res['records']}건 · "
+                 f"청구 후보 {len(a.get('claims', []))}건 · 보완 제안 {len(a.get('gaps', []))}건",
+                 f"제안 후 월 약 {round(pp['total_mid'] / 10000):,}만 원"
+                 + (" · PDF 암호: 생년월일 8자리" if res["encrypted_with_birth_date"] else "")]
+        lines += [f"⚠ {w}" for w in res["warnings"][:3]]
+        from datetime import datetime, timezone
+        await cov_store.update(uid, rid, status="done", message="\n".join(lines), customer_name=c.get("name"),
+                               birth_date=c.get("birth_date"), records_count=res["records"], extract=res["extract"],
+                               analysis=res["analysis"], plan=pp, warnings=res["warnings"], results=results,
+                               analyzed_at=datetime.now(timezone.utc).isoformat())
+    except Exception as exc:  # never leave a report "running"
+        try:
+            await cov_store.update(uid, rid, status="error",
+                                   message=f"❌ 작성 실패: {type(exc).__name__}. 잠시 후 다시 시도해 주세요.")
+        except Exception:
+            pass
+    finally:
+        _COV_ACTIVE.pop(rid, None)
+
+
+async def _coverage_as_medical(user: dict, row: dict, raw: bytes) -> None:
+    rid = row["id"]
+    try:
+        if len(raw) > medical.MAX_UPLOAD_BYTES:
+            result = {"message": "❌ 의료비·처방 PDF가 너무 큽니다(15MB 초과)."}
+        else:
+            result = await _save_medical_document(user, raw, "application/pdf", "", row.get("filename"))
+        await cov_store.update(user["id"], rid, status="other",
+                               message=result.get("message", "") + "\n(보장분석 보고서가 아니라 의료비·처방으로 처리했습니다. 이 항목은 지워도 됩니다.)")
+    except Exception as exc:
+        try:
+            await cov_store.update(user["id"], rid, status="error", message=f"❌ 처리 실패: {type(exc).__name__}")
+        except Exception:
+            pass
+    finally:
+        _COV_ACTIVE.pop(rid, None)
+
+
+@app.get("/api/coverage/{report_id}/files/{index}")
+async def coverage_file(report_id: int, index: int, x_pick3_token: Optional[str] = Header(default=None)) -> Response:
+    user = await _current_user(x_pick3_token)
+    try:
+        row = await cov_store.get(user["id"], report_id)
+        files = (row or {}).get("results") or []
+        if not 0 <= index < len(files):
+            raise HTTPException(status_code=404, detail="파일이 없습니다.")
+        data = await cov_store.get_file(files[index]["path"])
+    except cov_store.StoreError as exc:
+        raise _store_failed(exc)
+    ext = files[index]["name"].rsplit(".", 1)[-1]
+    return Response(content=data, media_type=_MEDIA.get(ext, "application/octet-stream"),
+                    headers={"Content-Disposition": "inline; filename*=UTF-8''" + quote(files[index]["name"]),
+                             "Cache-Control": "no-store"})
+
+
+@app.delete("/api/coverage/{report_id}")
+async def coverage_delete(report_id: int, x_pick3_token: Optional[str] = Header(default=None)) -> dict:
+    user = await _current_user(x_pick3_token)
+    if report_id in _COV_ACTIVE:
+        return {"ok": False, "message": "작성 중에는 지울 수 없습니다."}
+    try:
+        row = await cov_store.get(user["id"], report_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="보고서가 없습니다.")
+        await cov_store.delete_files([row["storage_path"]] + [f["path"] for f in row.get("results") or []])
+        await cov_store.delete(user["id"], report_id)
+    except cov_store.StoreError as exc:
+        raise _store_failed(exc)
+    return {"ok": True}
 
 
 async def _process_link(user: dict, link: str) -> dict:
@@ -435,6 +622,9 @@ def _shared_text(raw: bytes, declared: str | None = None) -> tuple[str, str]:
     if is_link:
         host = urlsplit(link).hostname or ""
         if link.startswith("https://") and link_render.host_allowed(host):
+            if not link_render.browser_enabled():
+                return "", ("🔗 링크 읽기는 잠시 꺼져 있습니다.\n"
+                            "그 페이지를 Safari에서 열고 스크린샷 → 썸네일 → 위쪽 [전체 페이지] → 공유 → Pick3 으로 보내 주세요(PDF로 저장됨).")
             return link, ""
         return "", ("🔗 링크를 받았습니다. 아직 링크로 읽을 수 없는 사이트입니다" + (f"({host})" if host else "") + ".\n"
                     "그 페이지를 Safari에서 열고 스크린샷 → 썸네일 → 위쪽 [전체 페이지] → 공유 → Pick3 으로 보내 주세요(PDF로 저장됨).")
@@ -482,7 +672,8 @@ async def _save_restaurant(user: dict, raw: bytes, mime: str) -> dict:
 async def recent_jobs(x_pick3_token: Optional[str] = Header(default=None)) -> dict:
     """Recent background jobs (shared links) of this user, newest first."""
     user = await _current_user(x_pick3_token)
-    return {"jobs": list(reversed(_JOBS.get(user.get("id"), [])))}
+    return {"jobs": [{k: v for k, v in j.items() if not k.startswith("_")}
+                     for j in reversed(_JOBS.get(user.get("id"), []))]}
 
 
 @app.get("/api/me")

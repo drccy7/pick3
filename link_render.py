@@ -29,6 +29,11 @@ class LinkError(ValueError):
     """User-facing reason a link cannot be rendered."""
 
 
+def browser_enabled() -> bool:
+    """Server-side Chromium (link reading, 보장분석 PDFs). Off unless PICK3_BROWSER=on."""
+    return os.getenv("PICK3_BROWSER", "off").strip().lower() in ("on", "1", "true", "yes")
+
+
 def allowed_domains() -> list[str]:
     raw = os.getenv("PICK3_RENDER_DOMAINS", "")
     return [d.strip().lower().lstrip(".") for d in raw.split(",") if d.strip()]

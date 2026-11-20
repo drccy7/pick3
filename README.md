@@ -88,7 +88,9 @@ pytest tests -q        # 전체 (맛집·의료비·처방·PIN)
 | `PICK3_GEMINI_MODEL` | 선택. 기본 `gemini-3.5-flash-lite`. 인식이 약하면 `gemini-3.8-flash` |
 | `KAKAO_REST_API_KEY` | 가게 확인·좌표 |
 | `PICK3_DAILY_LIMIT_PER_USER`, `PICK3_DAILY_LIMIT_TOTAL` | 선택. 하루 분석 한도 (기본 30 / 300) |
+| `PICK3_BROWSER` | 서버 브라우저(링크 읽기 · 보장분석 PDF). **기본 꺼짐**, `on`이면 켬. 꺼져 있으면 링크는 스크린샷 안내, 보장분석 결과는 HTML |
 | `PICK3_RENDER_DOMAINS` | 링크로 저장할 때 서버 브라우저가 열 수 있는 사이트(예: `myhom.me`) |
+| `COVERAGE_EXTRACT_MODEL`, `COVERAGE_ANALYZE_MODEL` | 선택. 보장분석 모델(기본 `gemini-3.5-flash` / `gemini-pro-latest`) |
 | `PLAYWRIGHT_BROWSERS_PATH` | `0` (Chromium을 venv 안에 설치) |
 | `PICK3_INGEST_TOKEN` | Supabase 없이 로컬에서만 쓰는 공용 토큰. 운영(Supabase)에서는 쓰지 않음 |
 
@@ -103,6 +105,17 @@ pytest tests -q        # 전체 (맛집·의료비·처방·PIN)
 - 메모리 절약: 한 번에 한 페이지, 이미지·글꼴·동영상 차단, 링크마다 브라우저를 켜고 바로 끔(512MB 인스턴스 기준, 부족하면 플랜 상향)
 - 목록에 없는 사이트의 링크는 분석 없이 "Safari [전체 페이지] PDF로 보내기" 안내만 돌려줌(사용 횟수 차감 없음)
 - Render 설정(지금 Python 서비스 그대로): Build Command `pip install -r requirements.txt && python -m playwright install chromium-headless-shell`, 환경변수 `PLAYWRIGHT_BROWSERS_PATH=0`, `PICK3_RENDER_DOMAINS=myhom.me`. 시스템 라이브러리가 없어 브라우저가 안 뜨면 `Dockerfile`(Playwright 공식 이미지)로 새 서비스를 만들어야 함(주소가 바뀌므로 단축어도 다시 만들어야 함)
+
+### 보장분석 (📋, `coverage_review/`)
+
+보장분석 보고서 PDF를 `Pick3`으로 공유하면 **저장만** 합니다(Supabase 테이블 `pick3_coverage_reports` + 비공개 버킷 `pick3-coverage`, `docs/SUPABASE_MIGRATION_006_coverage.sql`). 암호 PDF는 암호가 걸린 채로 보관하고 암호는 저장하지 않습니다.
+`coverage.html`에서 [제안서 작성]을 누르면(처음엔 PDF 암호 함께) 백그라운드로 분석해 분석서(설계사용)·제안서(고객용 1쪽 + 확인 사항)를 만듭니다. 한 번 읽은 보고서는 암호 없이 [다시 작성].
+
+- 계산은 코드, 읽기·설명은 Gemini: ① 보고서 → 공통 JSON(양식 무관, 담보 분류 40개) ② 코드가 나이·상령일·납입완료 추정·실손 기간·청구 기한·진료 묶음·정기 진료·과잉 보장 계산(`facts.py`) ③ Gemini가 사실 목록만 보고 청구·부족·최적화 작성(근거 id 필수, 근거 없는 항목과 보호 계약 해지는 코드가 제거) ④ 보험료 전후 비교(`plan.py`, 추가 보험료는 `rules.json` 설정표)
+- 병의원 기록은 보고서 고객 이름과 같은 환자 이름으로, **공유한 계정 안에서만** 찾음
+- 업무 규칙(기관 분류 키워드, 기준 금액, 보험료 표)은 `coverage_review/rules.json`. 보험료 표는 추정치이니 실제 견적으로 교체
+- 로컬 실행: `python -m coverage_review.cli --pdf 보고서.pdf --password <암호> --user-id <id> --out <폴더>` (중간 JSON은 `<폴더>/_work`에 캐시)
+- PDF 한글 글꼴은 `coverage_review/fonts/`(Noto Sans KR 부분집합, SIL OFL 1.1)를 넣어 서버에 글꼴이 없어도 같게 나옴
 
 ### 사용 요령과 결과 문구
 

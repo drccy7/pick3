@@ -1,0 +1,165 @@
+"""보장분석 PDFs: share → stored only → user runs it on coverage.html → result files. Store and pipeline faked."""
+
+from __future__ import annotations
+
+import io
+
+import pytest
+from pypdf import PdfWriter
+
+from test_medical import AUTH, SCREEN, _fake, client  # noqa: F401
+from test_medical import _env  # noqa: F401  (autouse Supabase/Gemini env)
+
+
+def _pdf(password: str = "") -> bytes:
+    w = PdfWriter()
+    w.add_blank_page(width=200, height=200)
+    if password:
+        w.encrypt(password)
+    out = io.BytesIO()
+    w.write(out)
+    return out.getvalue()
+
+
+class FakeStore:
+    def __init__(self):
+        self.rows, self.files, self.n = {}, {}, 0
+
+    async def put_file(self, path, data, content_type="application/pdf"):
+        self.files[path] = data
+
+    async def get_file(self, path):
+        return self.files[path]
+
+    async def delete_files(self, paths):
+        for p in paths:
+            self.files.pop(p, None)
+
+    async def create(self, user_id, filename, size, encrypted, storage_path):
+        self.n += 1
+        self.rows[self.n] = {"id": self.n, "user_id": user_id, "filename": filename, "size_bytes": size,
+                             "encrypted": encrypted, "storage_path": storage_path, "status": "stored",
+                             "message": None, "extract": None, "results": None, "created_at": "2026-11-20T00:00"}
+        return self.rows[self.n]
+
+    async def list_reports(self, user_id):
+        out = []
+        for r in self.rows.values():
+            if r["user_id"] == user_id:
+                x = {k: v for k, v in r.items() if k != "extract"}
+                x["extract_ready"] = (r["extract"] or {}).get("customer")
+                out.append(x)
+        return out
+
+    async def get(self, user_id, rid):
+        r = self.rows.get(rid)
+        return dict(r) if r and r["user_id"] == user_id else None
+
+    async def update(self, user_id, rid, **fields):
+        self.rows[rid].update(fields)
+
+    async def delete(self, user_id, rid):
+        self.rows.pop(rid, None)
+
+
+@pytest.fixture(autouse=True)
+def store(monkeypatch: pytest.MonkeyPatch):
+    import app
+    fake = FakeStore()
+    for name in ("put_file", "get_file", "delete_files", "create", "list_reports", "get", "update", "delete"):
+        monkeypatch.setattr(app.cov_store, name, getattr(fake, name))
+    fake.runs = []
+
+    def fake_run(raw, *, user_id, rep=None, progress=lambda s: None, **kw):
+        progress("보고서 읽는 중")
+        fake.runs.append({"raw": raw, "rep": rep, "user_id": user_id})
+        return {"customer": {"name": "홍길동", "birth_date": "1960-01-01"}, "records": 12,
+                "facts": {"contracts": [1, 2, 3]}, "extract": {"customer": {"name": "홍길동"}},
+                "analysis": {"claims": [1], "gaps": [1, 2]}, "plan": {"total_mid": 1_130_000}, "warnings": [],
+                "encrypted_with_birth_date": False,
+                "docs": {"홍길동_보장분석_청구및제안_2026-11-20.html": b"<html>a</html>",
+                         "홍길동_맞춤보장제안_2026-11-20.html": b"<html>b</html>"}}
+
+    monkeypatch.setattr(app.cov_service, "run", fake_run)
+    app._COV_ACTIVE.clear()
+    return fake
+
+
+def _share(raw: bytes) -> dict:
+    return client.post("/api/ingest/screenshot", headers=AUTH,
+                       files={"image": ("report.pdf", raw, "application/pdf")}).json()
+
+
+def _list() -> list[dict]:
+    return client.get("/api/coverage", headers=AUTH).json()["reports"]
+
+
+def test_shared_encrypted_pdf_is_only_stored(monkeypatch, store) -> None:
+    seen = _fake(monkeypatch, SCREEN)
+    res = _share(_pdf("20000101"))
+    assert res["status"] == "saved" and res["service"] == "coverage" and "제안서 작성" in res["message"]
+    assert seen["gemini"] == [] and store.runs == []
+    r = _list()[0]
+    assert r["encrypted"] and r["status"] == "stored" and not r["has_extract"] and r["files"] == []
+
+
+def test_run_needs_the_right_password_then_saves_results(monkeypatch, store) -> None:
+    import app
+    _fake(monkeypatch, SCREEN)
+    monkeypatch.setattr(app.cov_service, "is_coverage_report", lambda raw: True)
+    rid = _share(_pdf("20000101"))["report_id"]
+    assert client.post(f"/api/coverage/{rid}/run", headers=AUTH, json={}).json()["need_password"]
+    bad = client.post(f"/api/coverage/{rid}/run", headers=AUTH, json={"password": "0000"}).json()
+    assert not bad["ok"] and "맞지" in bad["message"]
+    ok = client.post(f"/api/coverage/{rid}/run", headers=AUTH, json={"password": "20000101"}).json()
+    assert ok["ok"]
+    r = _list()[0]
+    assert r["status"] == "done" and r["customer_name"] == "홍길동" and "제안 후 월 약 113만" in r["message"]
+    assert r["has_extract"] and [f["index"] for f in r["files"]] == [0, 1]
+    f = client.get(f"/api/coverage/{rid}/files/1", headers=AUTH)
+    assert f.status_code == 200 and f.content == b"<html>b</html>" and f.headers["content-type"].startswith("text/html")
+
+
+def test_rerun_reuses_the_extract_without_password(monkeypatch, store) -> None:
+    import app
+    _fake(monkeypatch, SCREEN)
+    monkeypatch.setattr(app.cov_service, "is_coverage_report", lambda raw: True)
+    rid = _share(_pdf("pw"))["report_id"]
+    client.post(f"/api/coverage/{rid}/run", headers=AUTH, json={"password": "pw"})
+    again = client.post(f"/api/coverage/{rid}/run", headers=AUTH, json={}).json()
+    assert again["ok"] and store.runs[-1]["rep"] == {"customer": {"name": "홍길동"}} and store.runs[-1]["raw"] == b""
+
+
+def test_encrypted_pdf_that_is_not_a_report_goes_to_medical(monkeypatch, store) -> None:
+    import app
+    _fake(monkeypatch, SCREEN)
+    monkeypatch.setattr(app.cov_service, "is_coverage_report", lambda raw: False)
+    handled = []
+
+    async def fake_medical(user, raw, mime, chosen, filename):
+        handled.append(raw)
+        return {"status": "saved", "message": "🧾 의료비 3건 저장"}
+
+    monkeypatch.setattr(app, "_save_medical_document", fake_medical)
+    rid = _share(_pdf("pw"))["report_id"]
+    assert client.post(f"/api/coverage/{rid}/run", headers=AUTH, json={"password": "pw"}).json()["ok"]
+    r = _list()[0]
+    assert handled and r["status"] == "other" and "의료비" in r["message"] and store.runs == []
+
+
+def test_delete_removes_row_and_files(monkeypatch, store) -> None:
+    _fake(monkeypatch, SCREEN)
+    rid = _share(_pdf("pw"))["report_id"]
+    assert store.files
+    assert client.delete(f"/api/coverage/{rid}", headers=AUTH).json()["ok"]
+    assert _list() == [] and store.files == {}
+
+
+def test_pdf_size_limits(monkeypatch, store) -> None:
+    import app
+    _fake(monkeypatch, SCREEN)
+    big = _pdf() + b"%" * (16 * 1024 * 1024)
+    monkeypatch.setattr(app.cov_service, "is_coverage_report", lambda raw: True)
+    assert _share(big)["status"] == "saved"  # a 16 MB report is fine (File API)
+    monkeypatch.setattr(app.cov_service, "is_coverage_report", lambda raw: False)
+    assert "15MB" in _share(big)["message"]  # a 16 MB medical PDF is not (inline Gemini)

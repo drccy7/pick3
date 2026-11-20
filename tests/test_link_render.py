@@ -15,6 +15,7 @@ LINK = "https://result.example-ins.kr/unclaimed/result?t=abc.def.ghi"
 def _domains(monkeypatch: pytest.MonkeyPatch) -> None:
     import app
     monkeypatch.setenv("PICK3_RENDER_DOMAINS", "example-ins.kr, other.com")
+    monkeypatch.setenv("PICK3_BROWSER", "on")
     app._JOBS.clear()
 
 
@@ -111,3 +112,11 @@ def test_link_with_person_tabs_saves_each_tab_under_its_name(monkeypatch: pytest
     patients = [{r["patient"] for r in kw["json"]} for url, kw in seen["posts"] if url.endswith("/pick3_medical_records")]
     assert patients == [{"홍길동"}, {"김예시"}]  # the tab name wins over the name read from the page
     assert "홍길동" in job["message"] and "김예시" in job["message"]
+
+
+def test_link_reading_off_by_default_gives_screenshot_guidance(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen = _fake(monkeypatch, SCREEN)
+    monkeypatch.delenv("PICK3_BROWSER", raising=False)
+    res = client.post("/api/ingest/screenshot", headers=AUTH,
+                      files={"image": ("text.txt", LINK.encode(), "text/plain")}).json()
+    assert res["status"] == "unsupported" and "꺼져" in res["message"] and seen["gemini"] == []

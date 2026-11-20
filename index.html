@@ -130,6 +130,7 @@
       { icon: "📌", name: "저장한 맛집", desc: "저장한 곳 전체 · 검색·동네별·삭제", href: "saved.html" },
       { icon: "🧾", name: "의료비 기록", desc: "병원·약국 결제 내역 정리 · 보험 청구용", href: "medical.html" },
       { icon: "💊", name: "처방·조제 기록", desc: "처방받은 약·약국 조제 내역 · 처방조제정보 PDF", href: "prescriptions.html" },
+      { icon: "📋", name: "보장분석", desc: "보장분석 보고서 → 청구·보완 제안서", href: "coverage.html" },
     ];
 
     const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -203,14 +204,16 @@
         if (res.ok) jobs = (await res.json()).jobs || [];
       } catch { /* server asleep: try again later */ }
       const box = $("jobs");
+      const ICON = { link: "🔗" };
       box.hidden = !jobs.length;
       box.innerHTML = jobs.length ? '<h2 style="font-size:15px">최근 처리</h2>' + jobs.map((j) => `
         <div class="job ${j.status === "running" ? "running" : ""}">
-          <div class="head"><span>🔗 ${esc(j.site || "링크")}</span><span>${esc(j.started || "")}${j.finished ? " → " + esc(j.finished) : ""}</span></div>
+          <div class="head"><span>${ICON[j.kind] || "🔗"} ${esc(j.site || "링크")}</span><span>${esc(j.started || "")}${j.finished ? " → " + esc(j.finished) : ""}</span></div>
           <div class="msg">${esc(j.message || "")}</div>
         </div>`).join("") : "";
       if (jobs.some((j) => j.status === "running")) jobsTimer = setTimeout(loadJobs, 3000);
     }
+
     document.addEventListener("visibilitychange", () => { if (!document.hidden) loadJobs(); });
 
     $("loginPanel").addEventListener("submit", async (e) => {
