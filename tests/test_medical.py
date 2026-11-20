@@ -243,7 +243,7 @@ def test_customer_name_form_field_overrides_screen_and_warns(monkeypatch: pytest
     assert "화면의 이름은 '정치연'" in res["message"]
     assert {r["patient"] for r in seen["posts"][0][1]["json"]} == {"김고객"}
     assert all(r["user_id"] == 7 for r in seen["posts"][0][1]["json"])
-    assert seen["gets"] == []  # explicit name: no 'recent patient' lookup
+    assert [g for g in seen["gets"] if g[1].get("params", {}).get("amount") != "is.null"] == []  # explicit name: no 'recent patient' lookup
 
 
 def test_customer_name_on_nameless_screen_has_no_warning(monkeypatch: pytest.MonkeyPatch) -> None:

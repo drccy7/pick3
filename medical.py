@@ -137,6 +137,40 @@ def _sb() -> tuple[str, dict]:
     return f"{base_url}/rest/v1/{MEDICAL_TABLE}", headers
 
 
+def norm_provider(provider: str) -> str:
+    return re.sub(r"[\s()\[\]·.\-]", "", provider or "")
+
+
+async def _fill_amountless(rows: list[dict], user_id: int | None, endpoint: str, headers: dict) -> list[dict]:
+    """Visits saved without an amount (나의건강기록 진료이력) get the amount of a payment for the same
+    patient, date and provider instead of a second row. Returns the rows still to insert."""
+    dates = sorted(r["visit_date"] for r in rows if r.get("visit_date"))
+    if not dates:
+        return rows
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(endpoint, headers=headers, params={
+                "select": "id,patient,provider,visit_date", "amount": "is.null",
+                "user_id": f"eq.{user_id}" if user_id is not None else "is.null",
+                "and": f"(visit_date.gte.{dates[0]},visit_date.lte.{dates[-1]})", "limit": "2000"})
+            if resp.status_code != 200:
+                return rows  # e.g. before migration 011: plain insert as before
+            open_rows = {(e["patient"], e["visit_date"], norm_provider(e["provider"])): e["id"] for e in resp.json()}
+            rest = []
+            for r in rows:
+                rid = open_rows.pop((r.get("patient"), r["visit_date"], norm_provider(r["provider"])), None)
+                if rid is None:
+                    rest.append(r)
+                    continue
+                p = await client.patch(endpoint, headers=headers, json={"amount": r["amount"], "kind": r["kind"]},
+                                       params={"id": f"eq.{rid}"})
+                if p.status_code >= 300:
+                    rest.append(r)
+            return rest
+    except Exception:
+        return rows
+
+
 async def save_medical_records(rows: list[dict], user_id: int | None, source: str) -> tuple[int, int]:
     """Insert rows for one user; exact repeats (same patient/provider/date/amount) are ignored.
 
@@ -145,6 +179,9 @@ async def save_medical_records(rows: list[dict], user_id: int | None, source: st
     if not rows:
         return 0, 0
     endpoint, headers = _sb()
+    rows = await _fill_amountless(rows, user_id, endpoint, headers)
+    if not rows:
+        return 0, 0
     body = [{**r, "user_id": user_id, "source": source} for r in rows]
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:

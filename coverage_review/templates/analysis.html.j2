@@ -5,7 +5,7 @@
 <h1>{{ c.name }} 님 보험 보장 · 병의원 기록 대조 분석</h1>
 <div class="meta">작성 {{ f.today }} · 설계사 내부 검토용 ·
 대상: {{ c.name }}({{ c.sex }}{% if c.birth_date %}, {{ c.birth_date }}, 만 {{ c.age }}세, 보험나이 {{ c.insurance_age }}세 → {{ c.next_insurance_age_date }}부터 {{ c.insurance_age_after }}세{% endif %})<br>
-자료 ① 보장분석 보고서({{ f.report.issuer }}{% if f.report.analysis_date %}, 분석일 {{ f.report.analysis_date }}{% endif %}) ② 병의원·약국 이용 기록 {{ f.records.count }}건({{ f.records.first }} ~ {{ f.records.last }}, 합계 {{ f.records.amount|won }}원)
+자료 ① 보장분석 보고서({{ f.report.issuer }}{% if f.report.analysis_date %}, 분석일 {{ f.report.analysis_date }}{% endif %}) ② 병의원·약국 이용 기록 {{ f.records.count }}건({{ f.records.first }} ~ {{ f.records.last }}, 합계 {{ f.records.amount|won }}원{% if f.records.without_amount %}, 이 중 {{ f.records.without_amount }}건은 금액 없는 진료이력{% endif %})
 {% if c.age_note %}<br><b class="r">※ {{ c.age_note }}</b>{% endif %}</div>
 
 <div class="box"><b>핵심 요약</b><ul>

@@ -47,7 +47,7 @@ from pydantic import BaseModel, field_validator
 try:
     from .providers import ProviderType, SituationType, get_kakao_diag, get_recommendations
     from .reels_script import build_reels_script
-    from . import auth_pin, health_checkup, link_render, medical, nhis_claims, prescriptions, screen_router
+    from . import auth_pin, health_checkup, link_render, medical, mhr, nhis_claims, prescriptions, screen_router
     from .coverage_review import pdf_io as cov_pdf, service as cov_service, store as cov_store
     from .coverage_review import gemini as cov_gemini
     from . import gemini_usage
@@ -76,6 +76,7 @@ except ImportError:
     from coverage_review import gemini as cov_gemini
     import gemini_usage
     import medical
+    import mhr
     import prescriptions
     import screen_router
     from saved_places import (
@@ -358,6 +359,11 @@ async def ingest_screenshot(
             return await _store_doc(user, raw, image.filename, "locked", encrypted=True)
         if cov_service.is_coverage_report(raw):  # 보장분석: store only, the user starts it on Pick3
             return await _store_doc(user, raw, image.filename, "coverage")
+        if mhr.is_mhr_pdf(raw):  # 나의건강기록 (검진·진료·투약, any mix): keep the file, read its parts
+            res = await _store_doc(user, raw, image.filename, "mhr")
+            if res["status"] == "saved":
+                res["message"] = (await _process_mhr(user, res["report_id"], raw))["message"]
+            return res
         if health_checkup.is_checkup_pdf(raw):  # 건강검진: store only (analysis comes later)
             return await _store_doc(user, raw, image.filename, "checkup")
         if len(raw) > medical.MAX_UPLOAD_BYTES:  # medical PDFs are sent inline to Gemini
@@ -433,8 +439,9 @@ _DOC_SAVED = {
     "locked": ["🔒 암호가 걸린 PDF를 받았습니다.", "Pick3 홈 → 🔒 암호 문서에서 암호를 넣고 종류를 골라 주세요."],
     "coverage": ["📋 보장분석 보고서를 저장했습니다.", "제안서는 Pick3 → 📋 보장분석에서 [제안서 작성]을 눌러 시작하세요."],
     "checkup": ["🩺 건강검진 결과를 저장했습니다.", "Pick3 → 🩺 건강검진에서 볼 수 있습니다."],
+    "mhr": ["📱 나의건강기록을 저장했습니다."],
 }
-DOC_BOXES = ("coverage", "locked", "checkup")
+DOC_BOXES = ("coverage", "locked", "checkup", "mhr")
 
 
 async def _store_doc(user: dict, raw: bytes, filename: str | None, kind: str, encrypted: bool = False) -> dict:
@@ -576,7 +583,10 @@ class DocClassify(BaseModel):
 
 
 def _guess_kind(raw: bytes) -> str:
-    """coverage | medical (요양급여내역·처방조제·영수증 form) | checkup | "" (the user picks)."""
+    """mhr | coverage | medical (요양급여내역·처방조제·영수증 form) | checkup | "" (the user picks).
+    나의건강기록 first: a combined export also contains checkup words."""
+    if mhr.is_mhr_pdf(raw):
+        return "mhr"
     if cov_service.is_coverage_report(raw):
         return "coverage"
     if nhis_claims.is_nhis_pdf(raw) or prescriptions.is_prescription_pdf(raw):
@@ -633,6 +643,12 @@ async def doc_classify(doc_id: int, body: DocClassify, x_pick3_token: Optional[s
         if kind in ("coverage", "checkup"):
             await cov_store.update(user["id"], doc_id, kind=kind, status="stored", message=None)
             return {"ok": True, "message": "\n".join(_DOC_SAVED[kind])}
+        if kind == "mhr":
+            raw = await cov_store.get_file(row["storage_path"])
+            if not mhr.is_mhr_pdf(raw):
+                return {"ok": False, "message": "나의건강기록 문서가 아닙니다. 다른 종류를 골라 주세요."}
+            await cov_store.update(user["id"], doc_id, kind="mhr")
+            return await _process_mhr(user, doc_id, raw)
         if kind != "medical":
             raise HTTPException(status_code=400, detail="종류를 골라 주세요.")
         raw = await cov_store.get_file(row["storage_path"])
@@ -649,6 +665,50 @@ async def doc_classify(doc_id: int, body: DocClassify, x_pick3_token: Optional[s
         return {"ok": True, "message": result.get("message", "")}
     except cov_store.StoreError as exc:
         raise _store_failed(exc)
+
+
+async def _process_mhr(user: dict, doc_id: int, raw: bytes) -> dict:
+    """나의건강기록 → 진료이력 to 의료비 기록 (상병명 on matching rows, else visits without amount),
+    투약이력 to 처방 기록, 건강검진 kept in the file. The original PDF stays in the 📱 box."""
+    try:
+        r = await asyncio.to_thread(mhr.read, raw)
+        patient = r["patient"] or await medical.recent_patient(user["id"]) or ""
+        v = await mhr.save_visits(r["visits"], user["id"], patient)
+        m_new, m_dup = await prescriptions.save(r["meds"], user["id"], patient, "mhr") if r["meds"] else (0, 0)
+        lines = [f"📱 나의건강기록 · {patient or '이름 없음'} 님", mhr.section_summary(r["sections"]) or "구간을 찾지 못함"]
+        if r["visits"]:
+            lines.append(f"🏥 진료 {len(r['visits'])}건: 기존 의료비 기록에 상병명 연결 {v['linked']}건 · "
+                         f"금액 없는 진료로 새로 저장 {v['inserted']}건")
+        if r["meds"]:
+            lines.append(f"💊 투약 {len(r['meds'])}건: 처방 기록에 새로 저장 {m_new}건" + (f" (이미 있음 {m_dup}건)" if m_dup else ""))
+        if any(s["section"] == "checkup" for s in r["sections"]):
+            lines.append("🩺 건강검진: 이 문서에 보관 (분석은 준비 중)")
+        msg = "\n".join(lines)
+        await cov_store.update(user["id"], doc_id, status="done", message=msg, customer_name=patient or None,
+                               extract={"mhr": {"sections": r["sections"], "visits": len(r["visits"]),
+                                                "meds": len(r["meds"]), **v, "meds_new": m_new}})
+        return {"ok": True, "message": msg}
+    except (StorageError, cov_store.StoreError) as exc:
+        msg = "❌ 기록을 저장하지 못했습니다." + (" (DB migration 011 실행 필요)" if "null" in str(exc).lower() else "")
+        try:
+            await cov_store.update(user["id"], doc_id, status="error", message=msg)
+        except cov_store.StoreError:
+            pass
+        return {"ok": False, "message": msg}
+
+
+@app.post("/api/docs/{doc_id}/process")
+async def doc_process(doc_id: int, x_pick3_token: Optional[str] = Header(default=None)) -> dict:
+    """Read a stored 나의건강기록 again (after an error, or when the reader improves). Repeats are merged."""
+    user = await _current_user(x_pick3_token)
+    try:
+        row = await cov_store.get(user["id"], doc_id)
+        if not row or row.get("kind") != "mhr":
+            raise HTTPException(status_code=404, detail="나의건강기록 문서가 없습니다.")
+        raw = await cov_store.get_file(row["storage_path"])
+    except cov_store.StoreError as exc:
+        raise _store_failed(exc)
+    return await _process_mhr(user, doc_id, raw)
 
 
 @app.get("/api/docs/{doc_id}/original")

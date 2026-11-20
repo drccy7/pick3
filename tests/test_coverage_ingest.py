@@ -371,3 +371,50 @@ def test_contract_status_api_and_rerun_uses_it(monkeypatch, store) -> None:
     monkeypatch.setattr(app.cov_service, "run", spy)
     assert client.post(f"/api/coverage/{rid}/run", headers=AUTH, json={}).json()["ok"]
     assert seen["overrides"] == {"2": "stopped"} and seen["rep"]["contracts"][1]["no"] == 2
+
+
+def _fake_mhr(monkeypatch, app):
+    read = {"patient": "홍길동", "sections": [{"section": "visits", "heading": "진료이력", "pages": [1]},
+                                            {"section": "meds", "heading": "투약이력", "pages": [2]},
+                                            {"section": "checkup", "heading": "건강검진(일반)", "pages": [3, 4]}],
+            "visits": [{"visit_date": "2026-03-06"}] * 3, "meds": [{"visit_date": "2026-03-06"}] * 2}
+    saved = {}
+    monkeypatch.setattr(app.mhr, "is_mhr_pdf", lambda raw: True)
+    monkeypatch.setattr(app.mhr, "read", lambda raw: read)
+
+    async def visits(rows, uid, patient):
+        saved["visits"] = (len(rows), patient)
+        return {"linked": 1, "inserted": 2}
+
+    async def meds(rows, uid, patient, source):
+        saved["meds"] = (len(rows), patient, source)
+        return 2, 0
+    monkeypatch.setattr(app.mhr, "save_visits", visits)
+    monkeypatch.setattr(app.prescriptions, "save", meds)
+    return saved
+
+
+def test_shared_mhr_export_is_kept_and_read_into_records(monkeypatch, store) -> None:
+    import app
+    _fake(monkeypatch, SCREEN)
+    monkeypatch.setattr(app.cov_service, "is_coverage_report", lambda raw: False)
+    saved = _fake_mhr(monkeypatch, app)
+    res = _share(_pdf())
+    assert res["status"] == "saved" and res["kind"] == "mhr"
+    assert "진료 3건" in res["message"] and "새로 저장 2건" in res["message"] and "건강검진" in res["message"]
+    assert saved == {"visits": (3, "홍길동"), "meds": (2, "홍길동", "mhr")}
+    (row,) = _list("mhr")
+    assert row["status"] == "done" and row["customer_name"] == "홍길동" and store.files  # original kept
+    assert client.post(f"/api/docs/{row['id']}/process", headers=AUTH).json()["ok"]  # read again
+
+
+def test_locked_mhr_is_suggested_and_processed_on_confirm(monkeypatch, store) -> None:
+    import app
+    _fake(monkeypatch, SCREEN)
+    saved = _fake_mhr(monkeypatch, app)
+    monkeypatch.setattr(app.health_checkup, "is_checkup_pdf", lambda raw: True)  # combined file has checkup words
+    rid = _share(_pdf("pw"))["report_id"]
+    assert client.post(f"/api/docs/{rid}/open", headers=AUTH, json={"password": "pw"}).json()["suggested"] == "mhr"
+    d = client.post(f"/api/docs/{rid}/classify", headers=AUTH, json={"kind": "mhr"}).json()
+    assert d["ok"] and "투약 2건" in d["message"] and saved["meds"][0] == 2
+    assert _list("locked") == [] and len(_list("mhr")) == 1

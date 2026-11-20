@@ -106,13 +106,16 @@ async def save(parsed: dict, user_id, patient: str) -> dict:
     owner = f"eq.{user_id}" if user_id is not None else "is.null"
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.get(endpoint, headers=headers, params={
-            "select": "id,provider,visit_date", "user_id": owner, "patient": f"eq.{patient}",
+            "select": "id,provider,visit_date,amount", "user_id": owner, "patient": f"eq.{patient}",
             "and": f"(visit_date.gte.{dates[0]},visit_date.lte.{dates[-1]})", "limit": "5000"})
         if resp.status_code != 200:
             raise StorageError(f"Supabase select HTTP {resp.status_code}: {resp.text[:200]}")
         existing: dict[tuple, list[int]] = {}
+        no_amount: set[int] = set()
         for e in resp.json():
             existing.setdefault((e["visit_date"], _norm(e["provider"])), []).append(e["id"])
+            if e.get("amount") is None:
+                no_amount.add(e["id"])
         linked, new, skipped = 0, [], 0
         for r in rows:
             ids = existing.get((r["visit_date"], _norm(r["provider"])))
@@ -122,6 +125,12 @@ async def save(parsed: dict, user_id, patient: str) -> dict:
                                        params={"id": f"in.({','.join(map(str, ids))})", "user_id": owner})
                 if p.status_code >= 300:
                     raise StorageError(f"Supabase update HTTP {p.status_code}: {p.text[:200]}")
+                empty = [i for i in ids if i in no_amount]
+                if empty and r["amount"] > 0:  # a visit known only from 나의건강기록: now it has its 본인부담
+                    p = await client.patch(endpoint, headers=headers, json={"amount": r["amount"]},
+                                           params={"id": f"in.({','.join(map(str, empty))})", "user_id": owner})
+                    if p.status_code >= 300:
+                        raise StorageError(f"Supabase update HTTP {p.status_code}: {p.text[:200]}")
                 linked += 1
             elif r["amount"] > 0:
                 new.append({"user_id": user_id, "patient": patient, "provider": r["provider"], "kind": r["kind"],

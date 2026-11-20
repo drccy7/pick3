@@ -70,10 +70,13 @@
     const BOXES = {
       locked: { title: "🔒 암호 문서", lead: "암호가 걸린 PDF는 여기에 모입니다. 암호를 넣으면 Pick3가 종류를 추정하니, 확인하고 저장하세요.",
                 empty: "열지 않은 암호 문서가 없습니다." },
+      mhr: { title: "📱 나의건강기록", lead: "나의건강기록 앱에서 내보낸 PDF 원본입니다. 진료이력은 의료비 기록에, 투약이력은 처방 기록에 넣었습니다.",
+             empty: "저장된 나의건강기록이 없습니다.<br>나의건강기록 앱 → PDF 저장 → 공유 → <b>Pick3</b> 를 고르세요." },
       checkup: { title: "🩺 건강검진", lead: "공유한 건강검진 결과입니다. (분석 기능은 준비 중)",
                  empty: "저장된 건강검진 결과가 없습니다.<br>건강검진 PDF → 공유 → <b>Pick3</b> 를 고르세요." },
     };
     const KINDS = [
+      ["mhr", "📱 나의건강기록 (검진·진료·투약)", "구간을 나눠 기록에 넣고 원본은 보관"],
       ["coverage", "📋 보장분석 보고서", "보장분석 화면으로 옮김 · 제안서 작성"],
       ["medical", "🧾 의료비·처방·요양급여내역", "기록으로 저장하고 PDF는 지움"],
       ["checkup", "🩺 건강검진 결과", "건강검진 보관함으로 옮김"],
@@ -94,6 +97,9 @@
       const view = `<button class="file view" type="button" data-id="${r.id}" data-name="${esc(r.filename || "문서.pdf")}">📄 PDF 보기</button>`;
       const del = `<button class="del" type="button" data-id="${r.id}">삭제</button>`;
       if (box === "checkup") return `<article class="card">${head}<div class="row">${view}${del}</div></article>`;
+      if (box === "mhr") return `<article class="card">${head}${r.message ? `<div class="msg">${esc(r.message)}</div>` : ""}
+        <div class="row">${view}<button class="file again" type="button" data-id="${r.id}">다시 읽기</button>${del}</div>
+        <div class="err" data-err="${r.id}"></div></article>`;
       if (r.encrypted) {  // not opened yet
         return `<article class="card">${head}
           <form class="row open" data-id="${r.id}">
@@ -174,8 +180,16 @@
         }
         return;
       }
+      const ag = e.target.closest(".again");
+      if (ag) {
+        ag.disabled = true; ag.textContent = "읽는 중…";
+        const res = await fetch(`${Pick3Account.API}/api/docs/${ag.dataset.id}/process`, { method: "POST", headers: hdr() }).catch(() => null);
+        const d = res ? await res.json().catch(() => ({})) : {};
+        if (!d.ok) document.querySelector(`[data-err="${ag.dataset.id}"]`).textContent = d.message || d.detail || "서버에 연결하지 못했습니다.";
+        load(); return;
+      }
       const d = e.target.closest(".del");
-      if (!d || !confirm("이 문서를 지울까요?")) return;
+      if (!d || !confirm("이 문서를 지울까요?" + (box === "mhr" ? "\n(이미 넣은 진료·투약 기록은 남습니다)" : ""))) return;
       const res = await fetch(`${Pick3Account.API}/api/coverage/${d.dataset.id}`, { method: "DELETE", headers: hdr() }).catch(() => null);
       const body = res ? await res.json().catch(() => ({})) : {};
       if (!res || !res.ok || body.ok === false) { alert(body.message || "지우지 못했습니다."); return; }

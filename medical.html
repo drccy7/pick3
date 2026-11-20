@@ -138,7 +138,7 @@
     const token = () => Pick3Account.getToken();
 
     const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-    const won = (n) => `${Number(n).toLocaleString("ko-KR")}원`;
+    const won = (n) => n == null ? "금액 없음" : `${Number(n).toLocaleString("ko-KR")}원`;
 
     // Sort state: column key + direction. Ties fall back to newest date first.
     const SORT_DEFAULT_DIR = { visit_date: -1, amount: -1, patient: 1, provider: 1, kind: 1 };
@@ -194,7 +194,7 @@
       document.getElementById("rows").innerHTML = rows.map((r) => `
         <tr data-id="${r.id}"><td>${esc(r.patient || "-")}</td><td>${esc(r.visit_date)}</td><td>${esc(r.provider)}${r.diagnosis_name ? `<div class="dx">${esc(r.diagnosis_name)} ${esc(r.diagnosis_code || "")}${r.visit_type === "입원" ? " · 입원" : ""}</div>` : ""}</td>
         <td>${esc(r.kind)}</td><td class="num">${won(r.amount)}</td></tr>`).join("");
-      const sum = (f) => rows.filter(f).reduce((a, r) => a + r.amount, 0);
+      const sum = (f) => rows.filter(f).reduce((a, r) => a + (r.amount || 0), 0);
       const tiles = [["합계", sum(() => true), rows.length]]
         .concat(["병원", "약국", "안경", "기타"].map((k) => [k, sum((r) => r.kind === k), rows.filter((r) => r.kind === k).length]))
         .filter(([, , n], i) => i === 0 || n > 0);
