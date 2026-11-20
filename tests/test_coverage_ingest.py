@@ -291,7 +291,7 @@ def test_contract_status_api_and_rerun_uses_it(monkeypatch, store) -> None:
          "paid_count": 40, "type": "화재·가정", "coverages": []}]}
     d = client.get(f"/api/coverage/{rid}/contracts", headers=AUTH).json()
     assert [c["estimate"] for c in d["contracts"]] == ["paid_up", "paying"] and d["statuses"]["stopped"].startswith("납입 안 함")
-    r = client.put(f"/api/coverage/{rid}/overrides", headers=AUTH, json={"overrides": {"2": "stopped", "1": "auto", "x": "paying"}})
+    r = client.post(f"/api/coverage/{rid}/overrides", headers=AUTH, json={"overrides": {"2": "stopped", "1": "auto", "x": "paying"}})
     assert r.json()["overrides"] == {"2": "stopped"}
     assert client.get(f"/api/coverage/{rid}/contracts", headers=AUTH).json()["contracts"][1]["status"] == "stopped"
     seen = {}

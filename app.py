@@ -618,7 +618,7 @@ class CoverageOverrides(BaseModel):
     overrides: dict[str, str]
 
 
-@app.put("/api/coverage/{report_id}/overrides")
+@app.post("/api/coverage/{report_id}/overrides")
 async def coverage_overrides(report_id: int, body: CoverageOverrides,
                              x_pick3_token: Optional[str] = Header(default=None)) -> dict:
     """Save the planner's contract statuses ("auto" = keep Pick3's estimate). Takes effect on the next run."""

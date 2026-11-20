@@ -271,8 +271,8 @@
       document.querySelectorAll(`#st-${id} select`).forEach((s) => { if (s.value !== "auto") overrides[s.dataset.no] = s.value; });
       btn.disabled = true;
       const h = { "Content-Type": "application/json", "X-Pick3-Token": Pick3Account.getToken() };
-      const put = await fetch(`${Pick3Account.API}/api/coverage/${id}/overrides`, { method: "PUT", headers: h, body: JSON.stringify({ overrides }) }).catch(() => null);
-      if (!put || !put.ok) { alert("저장하지 못했습니다. (DB에 계약 상태 칸이 없으면 migration 009 실행 필요)"); btn.disabled = false; return; }
+      const put = await fetch(`${Pick3Account.API}/api/coverage/${id}/overrides`, { method: "POST", headers: h, body: JSON.stringify({ overrides }) }).catch(() => null);
+      if (!put || !put.ok) { const m = put ? (await put.json().catch(() => ({}))).detail : ""; alert("저장하지 못했습니다." + (m ? " " + m : " 서버 연결을 확인해 주세요.")); btn.disabled = false; return; }
       const run = await fetch(`${Pick3Account.API}/api/coverage/${id}/run`, { method: "POST", headers: h, body: "{}" }).catch(() => null);
       const d = run ? await run.json().catch(() => ({})) : {};
       if (!d.ok) alert(d.message || "다시 작성을 시작하지 못했습니다.");
