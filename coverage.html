@@ -139,7 +139,7 @@
       const all = r.files || [];
       const htmls = all.filter((f) => !f.name.endsWith(".pdf")), pdfs = all.filter((f) => f.name.endsWith(".pdf"));
       const files = htmls.map((f) => btn(f, `📄 ${kind(f)}`)).join("");
-      const pdfRow = pdfs.length ? `<div class="row pdfrow"><span class="pdflabel">PDF 받기 (고객 전송용 · 암호 생년월일)</span>` +
+      const pdfRow = pdfs.length ? `<div class="row pdfrow"><span class="pdflabel">PDF 보내기 (카톡 등 · 암호 생년월일)</span>` +
         pdfs.map((f) => btn(f, `${kind(f)} PDF`)).join("") + `</div>` : "";
       return `<article class="card ${running ? "running" : ""}" data-id="${r.id}">
         <div class="name">${esc(title)}</div>
@@ -177,6 +177,7 @@
       $("list").innerHTML = rows.length ? rows.map(card).join("") :
         '<p class="empty">아직 저장된 보고서가 없습니다.<br>카톡 등에서 보장분석 PDF → 공유 → <b>Pick3</b> 를 고르세요.</p>';
       if (rows.some((r) => r.status === "running")) timer = setTimeout(load, 3000);
+      prefetchPdfs();
     }
 
     $("list").addEventListener("submit", async (e) => {
@@ -198,8 +199,49 @@
       load();
     });
 
+    // PDFs are fetched ahead of time: iOS only opens the share sheet during the tap itself, so the file
+    // must already be in memory. Sharing a File (not a link) keeps its name and sends no extra URL.
+    const pdfCache = new Map();
+    async function fetchFile(id, i, name) {
+      const key = `${id}:${i}`;
+      if (pdfCache.has(key)) return pdfCache.get(key);
+      const res = await fetch(`${Pick3Account.API}/api/coverage/${id}/files/${i}`,
+                              { headers: { "X-Pick3-Token": Pick3Account.getToken() } });
+      if (!res.ok) throw new Error(res.status);
+      const file = new File([await res.blob()], name, { type: "application/pdf" });
+      pdfCache.set(key, file);
+      return file;
+    }
+    function prefetchPdfs() {
+      document.querySelectorAll('.file[data-name$=".pdf"]').forEach((b) =>
+        fetchFile(b.dataset.id, b.dataset.i, b.dataset.name).catch(() => {}));
+    }
+    async function sharePdf(b) {
+      const key = `${b.dataset.id}:${b.dataset.i}`;
+      const ready = pdfCache.get(key);
+      if (ready && navigator.canShare && navigator.canShare({ files: [ready] })) {
+        try { await navigator.share({ files: [ready] }); } catch (err) { /* closed the sheet */ }
+        return;
+      }
+      try {
+        const file = ready || await fetchFile(b.dataset.id, b.dataset.i, b.dataset.name);
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          b.textContent = "📤 한 번 더 누르면 보내기";  // the tap that waited for the download no longer counts
+          return;
+        }
+        const a = document.createElement("a");  // desktop: save with its name
+        a.href = URL.createObjectURL(file); a.download = file.name; a.click();
+      } catch {
+        alert("파일을 받지 못했습니다. 잠시 후 다시 해 주세요.");
+      }
+    }
+
     $("list").addEventListener("click", async (e) => {
       const f = e.target.closest(".file");
+      if (f && f.dataset.name.endsWith(".pdf")) {  // PDFs are for sending: share the named file itself
+        await sharePdf(f);
+        return;
+      }
       if (f) {
         const win = window.open("", "_blank");  // open now: Safari blocks pop-ups opened after an await
         try {
