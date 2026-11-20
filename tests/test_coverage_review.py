@@ -190,3 +190,40 @@ def test_service_default_engine_makes_html_and_encrypted_pdfs(monkeypatch) -> No
     assert all(k.endswith(".html") for k in res["docs"]) and not res["encrypted_with_birth_date"]
     monkeypatch.setenv("COVERAGE_PDF_ENGINE", "browser")  # no browser on this box → still ReportLab PDFs
     assert service.pdf_engine() == "reportlab"
+
+
+def _with_indemnity_start(start: str, cap_manwon: int = 20) -> dict:
+    import copy
+    rep = copy.deepcopy(REPORT)
+    c = next(c for c in rep["contracts"] if c["no"] == 2)
+    c["start"], c["end"] = start, "2030-12"
+    c["coverages"] = [{"name": "외래", "amount": cap_manwon, "unit": "만원", "category": "실손통원"}]
+    return rep
+
+
+def test_indemnity_generation_by_contract_start() -> None:
+    r = F.load_rules()
+    name = lambda ym: F.indemnity_generation(ym, r)["name"]
+    assert [name(x) for x in ("2008-05", "2010-01", "2014-06", "2019-03", "2023-01", "2026-04", "2026-05", "2026-09")] == \
+        ["1세대", "2세대(초기)", "2세대(후기)", "3세대", "4세대", "4세대", "5세대", "5세대"]
+
+
+def test_third_generation_deducts_pharmacy_separately() -> None:
+    est = F.build(_with_indemnity_start("2019-03"), RECORDS, TODAY)["indemnity_estimate"]
+    # 2025-04..12 monthly: clinic 1,500 (below the 1만 deductible -> 0) + pharmacy 21,400 - max(8,000, 20%) = 13,400
+    monthly = [r for r in est["rows"] if "동네약국" in r["providers"]]
+    assert est["generations"][0]["generation"] == "3세대" and sum(r["estimate"] for r in monthly) == 9 * 13_400
+
+
+def test_fourth_generation_deducts_the_day_once() -> None:
+    est = F.build(_with_indemnity_start("2023-01"), RECORDS, TODAY)["indemnity_estimate"]
+    monthly = [r for r in est["rows"] if "동네약국" in r["providers"]]
+    assert est["generations"][0]["generation"] == "4세대" and sum(r["estimate"] for r in monthly) == 9 * (22_900 - 10_000)
+
+
+def test_early_second_generation_fixed_deductible_and_contract_cap() -> None:
+    import copy
+    recs = copy.deepcopy(RECORDS) + [{"provider": "가나대학교병원", "kind": "병원", "amount": 400_000, "visit_date": "2025-06-20"}]
+    est = F.build(_with_indemnity_start("2011-05", cap_manwon=25), recs, TODAY)["indemnity_estimate"]
+    big = next(r for r in est["rows"] if r["date"] == "2025-06-20")
+    assert big["generation"] == "2세대(초기)" and big["estimate"] == 250_000  # 400,000 - 20,000, capped at 25만

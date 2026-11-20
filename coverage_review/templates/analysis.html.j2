@@ -40,6 +40,7 @@
 <td>{{ x.title }}</td><td>{{ x.insurance }}</td><td>{{ x.check }}</td><td class="small">{{ x.evidence|join(', ') }}</td></tr>{% endfor %}</table>
 <p>실손 추정({{ f.indemnity_estimate.id }}): 기한 내·실손 기간 {{ f.indemnity_estimate.days }}일 진료 {{ f.indemnity_estimate.billed|won }}원 → <b>약 {{ f.indemnity_estimate.estimate|won }}원</b>
 ({{ f.indemnity_estimate.excluded_types|join('·') }} {{ f.indemnity_estimate.excluded_total|won }}원 제외, 급여·비급여 구분 없는 개략치).</p>
+{% if f.indemnity_estimate.generations %}<p class="small">실손 세대(계약 시작월 기준): {% for g in f.indemnity_estimate.generations %}{{ g.contract }} <b>{{ g.generation }}</b> — {{ g.days }}일 {{ g.billed|won }}원 → 약 {{ g.estimate|won }}원 ({{ g.note }}){% if not loop.last %} / {% endif %}{% endfor %}</p>{% endif %}
 
 <h2>4. 보장 부족 → 신규 가입 제안</h2>
 <div class="box">제안 시점: 상령일 <b>{{ c.next_insurance_age_date }}</b> 이전(보험나이 {{ c.insurance_age_after }}세 되기 전, {{ c.days_to_change }}일 남음) 체결이 보험료상 유리.</div>

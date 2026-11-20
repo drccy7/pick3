@@ -284,6 +284,10 @@ def analysis_pdf(facts: dict, analysis: dict, plan: dict, warnings: list[str]) -
     out.append(P(f"실손 추정({e(ie.get('id'))}): 기한 내·실손 기간 {e(ie.get('days'))}일 진료 {won(ie.get('billed'))}원 → "
                  f"<b>약 {won(ie.get('estimate'))}원</b> ({e('·'.join(ie.get('excluded_types', [])))} "
                  f"{won(ie.get('excluded_total'))}원 제외, 급여·비급여 구분 없는 개략치).", s.body))
+    if ie.get("generations"):
+        out.append(P("실손 세대(계약 시작월 기준): " + " / ".join(
+            f"{e(g['contract'])} <b>{e(g['generation'])}</b> — {e(g['days'])}일 {won(g['billed'])}원 → 약 "
+            f"{won(g['estimate'])}원 ({e(g.get('note', ''))})" for g in ie["generations"]), s.small))
 
     # 4. 보장 부족 → 신규 가입 제안
     h2("4. 보장 부족 → 신규 가입 제안")

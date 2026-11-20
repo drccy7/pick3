@@ -242,31 +242,75 @@ def recurring(recs: list[dict], rules: dict) -> list[dict]:
     return out
 
 
+def indemnity_generation(start_ym: str | None, rules: dict) -> dict | None:
+    """실손 세대 from the contract's start month (YYYY-MM). 4세대 and 5세대 split on 2026-05 (5세대 from 05-06)."""
+    if not start_ym:
+        return None
+    for g in rules["indemnity_estimate"]["generations"]:
+        if g["from"] <= start_ym <= g["to"]:
+            # a 2026-05 start is 4세대 only before 05-06; month precision -> treat 2026-05 as 5세대 (sold from 05-06)
+            if g["name"] == "4세대" and start_ym == "2026-05":
+                continue
+            return g
+    return None
+
+
+def _deduct(amount: int, rule: dict, tier: str) -> float:
+    mins = rule["min"]
+    base = mins.get(tier, mins.get("의원", 10000)) if isinstance(mins, dict) else mins
+    return max(base, amount * rule.get("rate", 0.0))
+
+
 def indemnity_estimate(recs: list[dict], periods: list[dict], today: date, rules: dict) -> dict:
+    """Per visit day, the payout under the generation of the 실손 contract covering that day.
+
+    1~3세대 deduct pharmacy separately from the clinic visit; 4~5세대 deduct the day's total once.
+    Cap per day: the contract's 통원 amount when the report has it, else the generation's default.
+    """
     cfg, years = rules["indemnity_estimate"], rules["claim_deadline_years"]
-    days: dict[date, list[dict]] = defaultdict(list)
+    tier_of = cfg.get("tier_of_type", {})
+    days: dict[tuple, list[dict]] = defaultdict(list)
     excluded_total = 0
     for r in recs:
         ym = r["date"].strftime("%Y-%m")
-        if not any(_covered(ym, p["start"], p["end"]) for p in periods):
-            continue
-        if add_months(r["date"], 12 * years) < today:
+        period = next((p for p in periods if _covered(ym, p["start"], p["end"])), None)
+        if not period or add_months(r["date"], 12 * years) < today:
             continue
         if r["type"] in cfg["exclude_types"]:
             excluded_total += r["amount"]
             continue
-        days[r["date"]].append(r)
-    rows, est = [], 0
-    for d, rs in sorted(days.items()):
-        amt = sum(r["amount"] for r in rs)
-        tier = "상급종합" if any(r["type"] == "상급종합" for r in rs) else "default"
-        ded = max(cfg["min_deductible"].get(tier, cfg["min_deductible"]["default"]), amt * cfg["deductible_rate"])
-        pay = int(max(0, min(amt - ded, cfg["daily_cap"])))
+        days[(r["date"], period["contract"])].append(r)
+    by_contract = {p["contract"]: p for p in periods}
+    rows, est, gens = [], 0, {}
+    for (d, cid), rs in sorted(days.items()):
+        period = by_contract[cid]
+        gen = indemnity_generation(period["start"], rules)
+        if gen is None:
+            continue
+        cap = period["amounts"].get("실손통원") or gen["daily_cap"]
+        clinic = [r for r in rs if r["type"] != "약국"]
+        pharm = [r for r in rs if r["type"] == "약국"]
+        tier = max((tier_of.get(r["type"], "의원") for r in clinic),
+                   key=lambda t: {"의원": 0, "병원": 1, "상급종합": 2}.get(t, 0), default="의원")
+        c_amt, p_amt = sum(r["amount"] for r in clinic), sum(r["amount"] for r in pharm)
+        if gen.get("pharmacy"):  # 1~3세대: clinic and pharmacy deducted separately
+            pay = max(0, min(c_amt - _deduct(c_amt, gen["outpatient"], tier), cap)) if c_amt else 0
+            pay += max(0, p_amt - _deduct(p_amt, gen["pharmacy"], tier)) if p_amt else 0
+        else:  # 4~5세대 (and 1세대 here): one deduction for the day's clinic + pharmacy
+            total = c_amt + p_amt
+            pay = max(0, min(total - _deduct(total, gen["outpatient"], tier), cap))
+        pay = int(pay)
         est += pay
-        rows.append({"date": d.isoformat(), "amount": amt, "estimate": pay, "records": [r["id"] for r in rs],
-                     "providers": sorted({r["provider"] for r in rs})})
+        g = gens.setdefault(gen["name"], {"generation": gen["name"], "contract": cid, "days": 0, "billed": 0,
+                                         "estimate": 0, "note": gen.get("note", "")})
+        g["days"] += 1
+        g["billed"] += c_amt + p_amt
+        g["estimate"] += pay
+        rows.append({"date": d.isoformat(), "amount": c_amt + p_amt, "estimate": pay, "generation": gen["name"],
+                     "contract": cid, "records": [r["id"] for r in rs], "providers": sorted({r["provider"] for r in rs})})
     return {"id": "I1", "days": len(rows), "billed": sum(r["amount"] for r in rows), "estimate": est,
-            "excluded_types": cfg["exclude_types"], "excluded_total": excluded_total, "rows": rows}
+            "generations": list(gens.values()), "excluded_types": cfg["exclude_types"],
+            "excluded_total": excluded_total, "rows": rows}
 
 
 # ---- assemble --------------------------------------------------------------------------------
