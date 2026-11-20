@@ -247,8 +247,12 @@ def clusters(recs: list[dict], contracts: list[dict], today: date, rules: dict) 
 
 
 def _dx_key(r: dict) -> str | None:
-    """상병코드 (요양급여내역) or, without a code, the 상병명 (나의건강기록 진료이력)."""
-    return r.get("dx_code") or ((r.get("dx_name") or "").strip() or None)
+    """The 상병명 (spaces ignored) so 요양급여내역 rows (name + code) and 나의건강기록 rows (name only) of the
+    same diagnosis count together; the code alone when there is no name."""
+    name = "".join((r.get("dx_name") or "").split())
+    if not re.search(r"[가-힣A-Za-z]", name):  # "-" and the like on pharmacy rows: no diagnosis
+        name = ""
+    return name or r.get("dx_code") or None
 
 
 def _dx_list(rs: list[dict]) -> list[str]:

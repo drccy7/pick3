@@ -96,9 +96,12 @@
       const head = `<div class="name">${esc(r.filename || "문서")}</div><div class="meta">${esc(meta)}</div>`;
       const view = `<button class="file view" type="button" data-id="${r.id}" data-name="${esc(r.filename || "문서.pdf")}">📄 PDF 보기</button>`;
       const del = `<button class="del" type="button" data-id="${r.id}">삭제</button>`;
-      if (box === "checkup") return `<article class="card">${head}<div class="row">${view}${del}</div></article>`;
+      const analyze = r.customer_name ? `<button class="btn analyze" type="button" data-id="${r.id}">📋 ${esc(r.customer_name)} 님 보장분석에 반영</button>` : "";
+      if (box === "checkup") return `<article class="card">${head}<div class="row">${view}${del}</div>
+        ${analyze ? `<div class="row">${analyze}</div>` : ""}<div class="err" data-err="${r.id}"></div></article>`;
       if (box === "mhr") return `<article class="card">${head}${r.message ? `<div class="msg">${esc(r.message)}</div>` : ""}
         <div class="row">${view}<button class="file again" type="button" data-id="${r.id}">다시 읽기</button>${del}</div>
+        ${analyze ? `<div class="row">${analyze}</div><p class="hint">보장분석 보고서가 있으면 새 기록으로 다시 작성하고, 없으면 건강 기록만으로 건강·보험 분석을 만듭니다.</p>` : ""}
         <div class="err" data-err="${r.id}"></div></article>`;
       if (r.encrypted) {  // not opened yet
         return `<article class="card">${head}
@@ -178,6 +181,17 @@
           if (win) win.close();
           alert("파일을 받지 못했습니다. 잠시 후 다시 해 주세요.");
         }
+        return;
+      }
+      const an = e.target.closest(".analyze");
+      if (an) {
+        an.disabled = true; an.textContent = "시작하는 중…";
+        const res = await fetch(`${Pick3Account.API}/api/docs/${an.dataset.id}/analyze`, { method: "POST", headers: hdr() }).catch(() => null);
+        const d = res ? await res.json().catch(() => ({})) : {};
+        if (!d.ok) { an.disabled = false; an.textContent = "📋 보장분석에 반영";
+          document.querySelector(`[data-err="${an.dataset.id}"]`).textContent = d.message || d.detail || "서버에 연결하지 못했습니다."; return; }
+        alert(d.message || "시작했습니다.");
+        location.href = "coverage.html";
         return;
       }
       const ag = e.target.closest(".again");

@@ -14,6 +14,7 @@ if sys.stdout is not None and hasattr(sys.stdout, "reconfigure"):
 
 import asyncio
 import collections
+import io
 import os
 import time
 
@@ -49,6 +50,7 @@ try:
     from .reels_script import build_reels_script
     from . import auth_pin, health_checkup, link_render, medical, mhr, nhis_claims, prescriptions, screen_router
     from .coverage_review import pdf_io as cov_pdf, service as cov_service, store as cov_store
+    from .coverage_review import health as cov_health
     from .coverage_review import gemini as cov_gemini
     from . import gemini_usage
     from .saved_places import (
@@ -73,6 +75,7 @@ except ImportError:
     import link_render
     import nhis_claims
     from coverage_review import pdf_io as cov_pdf, service as cov_service, store as cov_store
+    from coverage_review import health as cov_health
     from coverage_review import gemini as cov_gemini
     import gemini_usage
     import medical
@@ -441,7 +444,7 @@ _DOC_SAVED = {
     "checkup": ["🩺 건강검진 결과를 저장했습니다.", "Pick3 → 🩺 건강검진에서 볼 수 있습니다."],
     "mhr": ["📱 나의건강기록을 저장했습니다."],
 }
-DOC_BOXES = ("coverage", "locked", "checkup", "mhr")
+DOC_BOXES = ("coverage", "locked", "checkup", "mhr", "health")
 
 
 async def _store_doc(user: dict, raw: bytes, filename: str | None, kind: str, encrypted: bool = False) -> dict:
@@ -682,11 +685,15 @@ async def _process_mhr(user: dict, doc_id: int, raw: bytes) -> dict:
         if r["meds"]:
             lines.append(f"💊 투약 {len(r['meds'])}건: 처방 기록에 새로 저장 {m_new}건" + (f" (이미 있음 {m_dup}건)" if m_dup else ""))
         if any(s["section"] == "checkup" for s in r["sections"]):
-            lines.append("🩺 건강검진: 이 문서에 보관 (분석은 준비 중)")
+            checkup_id = await _mhr_checkup_doc(user, doc_id, raw, r, patient)
+            lines.append("🩺 건강검진: 🩺 건강검진 폴더에 따로 저장" if checkup_id else "🩺 건강검진: 이 문서에 보관")
+        else:
+            checkup_id = None
         msg = "\n".join(lines)
         await cov_store.update(user["id"], doc_id, status="done", message=msg, customer_name=patient or None,
                                extract={"mhr": {"sections": r["sections"], "visits": len(r["visits"]),
-                                                "meds": len(r["meds"]), **v, "meds_new": m_new}})
+                                                "meds": len(r["meds"]), **v, "meds_new": m_new,
+                                                "checkup_doc": checkup_id}})
         return {"ok": True, "message": msg}
     except (StorageError, cov_store.StoreError) as exc:
         msg = "❌ 기록을 저장하지 못했습니다." + (" (DB migration 011 실행 필요)" if "null" in str(exc).lower() else "")
@@ -695,6 +702,142 @@ async def _process_mhr(user: dict, doc_id: int, raw: bytes) -> dict:
         except cov_store.StoreError:
             pass
         return {"ok": False, "message": msg}
+
+
+async def _mhr_checkup_doc(user: dict, doc_id: int, raw: bytes, r: dict, patient: str) -> int | None:
+    """The 검진 pages of a 나의건강기록 as their own PDF in the 🩺 box; 다시 읽기 replaces the same file."""
+    pages = sorted({p for s in r["sections"] if s["section"] == "checkup" for p in s["pages"]})
+    if not pages:
+        return None
+    from pypdf import PdfReader, PdfWriter
+    try:
+        reader, writer = PdfReader(io.BytesIO(raw)), PdfWriter()
+        for p in pages:
+            if p <= len(reader.pages):
+                writer.add_page(reader.pages[p - 1])
+        if not writer.pages:
+            return None
+        buf = io.BytesIO()
+        writer.write(buf)
+        data = buf.getvalue()
+    except Exception:
+        return None  # the records are saved anyway; the 검진 pages stay in the original
+    row = await cov_store.get(user["id"], doc_id)
+    old = ((row or {}).get("extract") or {}).get("mhr", {}).get("checkup_doc")
+    prev = await cov_store.get(user["id"], old) if old else None
+    if prev and prev.get("kind") == "checkup":
+        await cov_store.put_file(prev["storage_path"], data)
+        return prev["id"]
+    from datetime import date as _date
+    name = f"나의건강기록_건강검진_{patient or '이름없음'}_{_date.today()}.pdf"
+    path = f"{user['id']}/{secrets.token_hex(8)}/original.pdf"
+    await cov_store.put_file(path, data)
+    new = await cov_store.create(user["id"], name, len(data), False, path, "checkup")
+    await cov_store.update(user["id"], new["id"], customer_name=patient or None)
+    return new["id"]
+
+
+@app.post("/api/docs/{doc_id}/analyze")
+async def doc_analyze(doc_id: int, background: BackgroundTasks,
+                      x_pick3_token: Optional[str] = Header(default=None)) -> dict:
+    """From a person's health document: re-run their 보장분석 report if there is one (it reads the new records),
+    else write a 건강·보험 분석 from the health records alone."""
+    user = await _current_user(x_pick3_token)
+    try:
+        row = await cov_store.get(user["id"], doc_id)
+        if not row or row.get("kind") not in ("mhr", "checkup"):
+            raise HTTPException(status_code=404, detail="문서가 없습니다.")
+        name = (row.get("customer_name") or "").strip()
+        if not name:
+            return {"ok": False, "message": "이 문서에서 이름을 찾지 못했습니다. [다시 읽기] 후 해 주세요."}
+        reports = [r for r in await cov_store.list_reports(user["id"], "coverage")
+                   if (r.get("customer_name") or "").strip() == name and r.get("extract_ready")]
+    except cov_store.StoreError as exc:
+        raise _store_failed(exc)
+    if reports:
+        rid = reports[0]["id"]  # newest first
+        res = await coverage_run(rid, CoverageRun(), background, x_pick3_token)
+        return {**res, "mode": "coverage", "report_id": rid,
+                "message": f"{name} 님 보장분석을 새 기록으로 다시 작성합니다." if res.get("ok") else res.get("message")}
+    return await _start_health(user, name, background)
+
+
+async def _start_health(user: dict, name: str, background: BackgroundTasks, row: dict | None = None) -> dict:
+    try:
+        if row is None:
+            rows = [r for r in await cov_store.list_reports(user["id"], "health")
+                    if (r.get("customer_name") or "").strip() == name]
+            if rows:
+                row = await cov_store.get(user["id"], rows[0]["id"])
+            else:
+                path = f"{user['id']}/{secrets.token_hex(8)}/analysis"
+                row = await cov_store.create(user["id"], f"{name} 건강·보험 분석", 0, False, path, "health")
+                await cov_store.update(user["id"], row["id"], customer_name=name)
+                row = {**row, "customer_name": name}
+        if row["id"] in _COV_ACTIVE:
+            return {"ok": False, "message": "이미 작성 중입니다."}
+        usage = await bump_usage(user["id"])
+        if usage["user_count"] > _daily_limits(user)[0]:
+            return {"ok": False, "message": "오늘 분석 한도를 넘었습니다. 내일 다시 시도해 주세요."}
+        _cov_progress(row["id"], {"stage": 3, "label": "건강 기록 모으는 중"})
+        await cov_store.update(user["id"], row["id"], status="running", message="")
+    except cov_store.StoreError as exc:
+        raise _store_failed(exc)
+    background.add_task(_run_health, user, row, name)
+    return {"ok": True, "mode": "health", "report_id": row["id"],
+            "message": f"{name} 님 보장분석 보고서가 없어 건강 기록만으로 건강·보험 분석을 작성합니다(약 30초)."}
+
+
+@app.post("/api/health/{report_id}/run")
+async def health_run(report_id: int, background: BackgroundTasks,
+                     x_pick3_token: Optional[str] = Header(default=None)) -> dict:
+    user = await _current_user(x_pick3_token)
+    try:
+        row = await cov_store.get(user["id"], report_id)
+    except cov_store.StoreError as exc:
+        raise _store_failed(exc)
+    if not row or row.get("kind") != "health":
+        raise HTTPException(status_code=404, detail="분석이 없습니다.")
+    return await _start_health(user, (row.get("customer_name") or "").strip(), background, row)
+
+
+async def _run_health(user: dict, row: dict, name: str) -> None:
+    rid, uid = row["id"], user["id"]
+    gemini_usage.bind(uid, ref=f"coverage:{rid}")
+    try:
+        records = await asyncio.to_thread(cov_service.fetch_records, name, uid)
+        meds = await prescriptions.list_rows(uid, name)
+        checkups = [r for r in await cov_store.list_reports(uid, "checkup") if (r.get("customer_name") or "") == name]
+        _cov_progress(rid, {"stage": 3, "label": f"분석 작성 중 (진료 {len(records)}건 · 투약 {len(meds)}건)"})
+        res = await asyncio.to_thread(cov_health.run, name, records, meds, checkup_docs=len(checkups))
+        _cov_progress(rid, {"stage": 4, "label": "결과 저장 중"})
+        base = row["storage_path"].rsplit("/", 1)[0]
+        results = []
+        for i, (fname, data) in enumerate(res["docs"].items()):
+            path = f"{base}/result_{i}.html"
+            await cov_store.put_file(path, data, _MEDIA["html"])
+            results.append({"name": fname, "path": path})
+        stale = [p for f in row.get("results") or [] for p in (f.get("path"), f.get("pdf_path"))
+                 if p and p not in {x["path"] for x in results}]
+        if stale:
+            try:
+                await cov_store.delete_files(stale)
+            except cov_store.StoreError:
+                pass
+        f, a = res["facts"], res["analysis"]
+        from datetime import datetime, timezone
+        msg = (f"진료 기록 {f['records']['count']}건 · 진단 {len(f['diagnoses'])}종 · 투약 {len(f['meds'])}종 · "
+               f"권할 보장 {len(a.get('needs', []))}개")
+        await cov_store.update(uid, rid, status="done", message=msg, results=results, analysis=a,
+                               records_count=f["records"]["count"], warnings=res["warnings"],
+                               analyzed_at=datetime.now(timezone.utc).isoformat())
+    except Exception as exc:
+        try:
+            await cov_store.update(uid, rid, status="error", message=f"❌ 작성 실패: {type(exc).__name__}. 잠시 후 다시 시도해 주세요.")
+        except Exception:
+            pass
+    finally:
+        _COV_ACTIVE.pop(rid, None)
 
 
 @app.post("/api/docs/{doc_id}/process")

@@ -394,18 +394,64 @@ def _fake_mhr(monkeypatch, app):
     return saved
 
 
+def _pdf_pages(n: int) -> bytes:
+    w = PdfWriter()
+    for _ in range(n):
+        w.add_blank_page(width=200, height=200)
+    out = io.BytesIO()
+    w.write(out)
+    return out.getvalue()
+
+
 def test_shared_mhr_export_is_kept_and_read_into_records(monkeypatch, store) -> None:
     import app
+    from pypdf import PdfReader
     _fake(monkeypatch, SCREEN)
     monkeypatch.setattr(app.cov_service, "is_coverage_report", lambda raw: False)
     saved = _fake_mhr(monkeypatch, app)
-    res = _share(_pdf())
+    res = _share(_pdf_pages(4))
     assert res["status"] == "saved" and res["kind"] == "mhr"
     assert "진료 3건" in res["message"] and "새로 저장 2건" in res["message"] and "건강검진" in res["message"]
     assert saved == {"visits": (3, "홍길동"), "meds": (2, "홍길동", "mhr")}
     (row,) = _list("mhr")
     assert row["status"] == "done" and row["customer_name"] == "홍길동" and store.files  # original kept
+    (chk,) = _list("checkup")  # 검진 pages 3-4 saved on their own in the 🩺 box, named after the person
+    assert chk["customer_name"] == "홍길동" and len(PdfReader(io.BytesIO(store.files[store.rows[chk["id"]]["storage_path"]])).pages) == 2
+    assert "🩺 건강검진 폴더" in res["message"]
     assert client.post(f"/api/docs/{row['id']}/process", headers=AUTH).json()["ok"]  # read again
+    assert [r["id"] for r in _list("checkup")] == [chk["id"]]  # replaced, not duplicated
+
+
+def test_analyze_reruns_the_persons_report_or_writes_a_health_analysis(monkeypatch, store) -> None:
+    import app
+    _fake(monkeypatch, SCREEN)
+    monkeypatch.setattr(app.cov_service, "is_coverage_report", lambda raw: False)
+    _fake_mhr(monkeypatch, app)
+    mid = _share(_pdf_pages(4))["report_id"]
+    seen = {}
+
+    def fake_health(name, records, meds, **kw):
+        seen["health"] = (name, len(records), len(meds), kw.get("checkup_docs"))
+        return {"facts": {"records": {"count": 2}, "diagnoses": [1], "meds": [1, 2]}, "analysis": {"needs": [1]},
+                "warnings": [], "docs": {"홍길동_건강보험분석_2026-11-21.html": b"<html>h</html>"}}
+
+    async def meds(uid, name):
+        return [{"drug_name": "x"}]
+    monkeypatch.setattr(app.cov_health, "run", fake_health)
+    monkeypatch.setattr(app.cov_service, "fetch_records", lambda name, uid: [{"a": 1}, {"b": 2}])
+    monkeypatch.setattr(app.prescriptions, "list_rows", meds)
+    d = client.post(f"/api/docs/{mid}/analyze", headers=AUTH).json()  # no 보장분석 report for 홍길동
+    assert d["ok"] and d["mode"] == "health" and "건강·보험 분석" in d["message"]
+    assert seen["health"] == ("홍길동", 2, 1, 1)
+    (h,) = _list("health")
+    assert h["status"] == "done" and "권할 보장 1개" in h["message"] and [f["name"] for f in h["files"]] == ["홍길동_건강보험분석_2026-11-21.html"]
+    assert client.post(f"/api/health/{h['id']}/run", headers=AUTH).json()["ok"]  # 다시 작성
+    assert len(_list("health")) == 1
+    rid = _report(monkeypatch)  # now a 보장분석 report for 홍길동 exists
+    store.rows[rid]["extract"] = {"customer": {"name": "홍길동"}}
+    store.rows[rid]["customer_name"] = "홍길동"
+    d = client.post(f"/api/docs/{mid}/analyze", headers=AUTH).json()
+    assert d["ok"] and d["mode"] == "coverage" and d["report_id"] == rid and store.runs
 
 
 def test_locked_mhr_is_suggested_and_processed_on_confirm(monkeypatch, store) -> None:

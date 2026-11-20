@@ -136,7 +136,9 @@
 
     function card(r) {
       const running = r.status === "running";
-      const title = r.customer_name ? `${r.customer_name} 님` : (r.filename || "보장분석 보고서");
+      const health = r.kind === "health";  // 건강·보험 분석: health records only, no 보장분석 report
+      const title = health ? `${r.customer_name || ""} 님 · 🩺 건강·보험 분석`
+        : r.customer_name ? `${r.customer_name} 님` : (r.filename || "보장분석 보고서");
       const meta = [`${day(r.created_at)} 저장`, r.size_bytes ? `${(r.size_bytes / 1048576).toFixed(1)}MB` : "",
                     r.records_count != null ? `병의원 기록 ${r.records_count}건` : "",
                     r.analyzed_at ? `작성 ${day(r.analyzed_at)}` : "", usageText(r.usage)].filter(Boolean).join(" · ");
@@ -154,8 +156,8 @@
         <div class="name">${esc(title)}</div>
         <div class="meta">${esc(meta)}</div>
         ${running ? progressHtml(r) : r.message ? `<div class="msg">${esc(r.message)}</div>` : ""}
-        ${running ? "" : `<form class="row run" data-id="${r.id}">
-          <button class="btn" type="submit">${(r.files || []).length ? "다시 작성" : "제안서 작성"}</button>
+        ${running ? "" : `<form class="row run" data-id="${r.id}" data-kind="${health ? "health" : "coverage"}">
+          <button class="btn" type="submit">${(r.files || []).length ? "다시 작성" : health ? "분석 작성" : "제안서 작성"}</button>
           ${r.has_extract ? `<button class="btn ghost stbtn" type="button" data-id="${r.id}">📝 계약 상태</button>` : ""}
         </form><div class="err" data-err="${r.id}"></div>`}
         <div class="row">${files}${running ? "" : `<button class="del" type="button" data-id="${r.id}">삭제</button>`}</div>
@@ -173,17 +175,20 @@
       if (document.activeElement && ["INPUT", "SELECT"].includes(document.activeElement.tagName)) { timer = setTimeout(load, 3000); return; }
       let data;
       try {
-        const res = await fetch(`${Pick3Account.API}/api/coverage`, { headers: { "X-Pick3-Token": token } });
+        const [res, hres] = await Promise.all(["coverage", "health"].map((k) =>
+          fetch(`${Pick3Account.API}/api/coverage?kind=${k}`, { headers: { "X-Pick3-Token": token } })));
         if (res.status === 401) { $("state").innerHTML = '로그인이 필요합니다. <a href="./">홈</a>에서 다시 들어가 주세요.'; return; }
         data = await res.json();
         if (!res.ok) throw new Error(data.detail || res.status);
+        const extra = hres.ok ? (await hres.json()).reports || [] : [];
+        data.reports = [...(data.reports || []), ...extra].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
       } catch (e) {
         $("state").textContent = "불러오지 못했습니다. 서버가 깨어나는 중이면 30초 뒤 새로고침해 주세요.";
         return;
       }
       const rows = data.reports || [];
       loadUsage(token);
-      $("state").textContent = rows.length ? `보고서 ${rows.length}건` : "";
+      $("state").textContent = rows.length ? `${rows.length}건` : "";
       $("list").innerHTML = rows.length ? rows.map(card).join("") :
         '<p class="empty">아직 저장된 보고서가 없습니다.<br>카톡 등에서 보장분석 PDF → 공유 → <b>Pick3</b> 를 고르세요.</p>';
       if (rows.some((r) => r.status === "running")) timer = setTimeout(load, 3000);
@@ -198,7 +203,7 @@
       const err = document.querySelector(`[data-err="${id}"]`);
       btn.disabled = true; err.textContent = "";
       try {
-        const res = await fetch(`${Pick3Account.API}/api/coverage/${id}/run`, {
+        const res = await fetch(`${Pick3Account.API}/api/${form.dataset.kind === "health" ? "health" : "coverage"}/${id}/run`, {
           method: "POST", headers: { "Content-Type": "application/json", "X-Pick3-Token": Pick3Account.getToken() },
           body: "{}",
         });

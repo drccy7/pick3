@@ -171,6 +171,8 @@ def parse_visits(pdf, sec: dict) -> list[dict]:
                 if not provider:
                     continue
                 dx = re.sub(r"\s+", " ", str(r[cols["dx"]] or "")).strip() if "dx" in cols else ""
+                if not re.search(r"[가-힣A-Za-z]", dx):
+                    dx = ""  # "-" on pharmacy rows
                 rows.append({"visit_date": d, "provider": provider, "diagnosis_name": dx or None,
                              "visit_days": _int(r[cols["visit_days"]]) if "visit_days" in cols else None,
                              "care_days": _int(r[cols["care_days"]]) if "care_days" in cols else None,

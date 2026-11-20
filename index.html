@@ -24,15 +24,20 @@
     .brand { font-size: 12px; font-weight: 700; color: var(--accent); letter-spacing: 0.08em; }
     h1 { font-size: 26px; font-weight: 800; letter-spacing: -0.02em; margin-top: 6px; }
     .sub { color: var(--muted); font-size: 14px; margin-top: 4px; }
-    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 24px; }
+    .grid { margin-top: 18px; }
+    .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .cat { font-size: 15px; font-weight: 800; color: var(--muted); margin: 18px 2px 8px; }
+    .inbox { display: block; margin-top: 4px; padding: 12px 14px; border-radius: 14px; text-decoration: none;
+      color: var(--text); background: var(--surface-2); border: 1px solid var(--accent, #ff6b35); font-size: 14.5px; }
+    .inbox[hidden] { display: none; }
     .svc {
-      display: flex; flex-direction: column; gap: 6px; min-height: 148px; padding: 18px 16px;
+      display: flex; flex-direction: column; gap: 4px; min-height: 112px; padding: 14px 14px;
       background: var(--surface); border: 1px solid var(--border); border-radius: 18px;
       color: var(--text); text-decoration: none;
     }
     .svc:active { background: var(--surface-2); }
-    .svc .icon { font-size: 34px; line-height: 1; }
-    .svc .name { font-size: 17px; font-weight: 700; margin-top: 6px; }
+    .svc .icon { font-size: 28px; line-height: 1; }
+    .svc .name { font-size: 16px; font-weight: 700; margin-top: 4px; }
     .svc .desc { color: var(--muted); font-size: 13px; }
     .acct {
       display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 16px;
@@ -77,7 +82,7 @@
     @media (prefers-reduced-motion: reduce) { .job.running .msg::before { animation: none; } }
     .foot { margin-top: 24px; color: var(--muted); font-size: 12px; }
     .foot a { color: var(--muted); }
-    @media (max-width: 340px) { .grid { grid-template-columns: 1fr; } }
+    @media (max-width: 340px) { .cards { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
@@ -125,25 +130,32 @@
 
   <script src="account.js"></script>
   <script>
-    // To add a service: append one entry. `href` is a page next to this one.
-    const SERVICES = [
-      { icon: "🍽️", name: "맛집 Pick3", desc: "지금 갈 곳 3곳 · 인스타 저장 맛집", href: "pick3.html" },
-      { icon: "📌", name: "저장한 맛집", desc: "저장한 곳 전체 · 검색·동네별·삭제", href: "saved.html" },
-      { icon: "🧾", name: "의료비 기록", desc: "병원·약국 결제 내역 정리 · 보험 청구용", href: "medical.html" },
-      { icon: "💊", name: "처방·조제 기록", desc: "처방받은 약·약국 조제 내역 · 처방조제정보 PDF", href: "prescriptions.html" },
-      { icon: "📋", name: "보장분석", desc: "보장분석 보고서 → 청구·보완 제안서", href: "coverage.html" },
-      { icon: "📱", name: "나의건강기록", desc: "검진·진료·투약 PDF → 기록으로", href: "docs.html?box=mhr" },
-      { icon: "🩺", name: "건강검진", desc: "공유한 건강검진 결과 보관", href: "docs.html?box=checkup" },
-      { icon: "🔒", name: "암호 문서", desc: "암호 PDF 열기 · 종류 고르기", href: "docs.html?box=locked", id: "lockedCard" },
+    // To add a service: append one entry to its category. `href` is a page next to this one.
+    const CATEGORIES = [
+      { title: "📍 장소", services: [
+        { icon: "🍽️", name: "맛집 Pick3", desc: "지금 갈 곳 3곳 · 인스타 저장 맛집", href: "pick3.html" },
+        { icon: "📌", name: "저장한 장소", desc: "저장한 곳 전체 · 검색·동네별·삭제", href: "saved.html" },
+      ] },
+      { title: "🩺 건강 기록", services: [
+        { icon: "🧾", name: "의료비 기록", desc: "병원·약국 결제 내역 · 진단명", href: "medical.html" },
+        { icon: "💊", name: "처방·조제 기록", desc: "처방받은 약 · 조제 내역", href: "prescriptions.html" },
+        { icon: "📱", name: "나의건강기록", desc: "검진·진료·투약 PDF → 기록으로", href: "docs.html?box=mhr" },
+        { icon: "🩺", name: "건강검진", desc: "건강검진 결과 보관", href: "docs.html?box=checkup" },
+      ] },
+      { title: "📋 보험", services: [
+        { icon: "📋", name: "보장분석", desc: "보장분석·건강보험 분석 → 제안서", href: "coverage.html" },
+      ] },
     ];
 
     const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-    document.getElementById("grid").innerHTML = SERVICES.map((s) => `
-      <a class="svc" href="${esc(s.href)}"${s.id ? ` id="${s.id}"` : ""}>
+    document.getElementById("grid").innerHTML =
+      `<a class="inbox" id="lockedBanner" href="docs.html?box=locked" hidden></a>` +
+      CATEGORIES.map((c) => `<h2 class="cat">${esc(c.title)}</h2><div class="cards">` + c.services.map((s) => `
+      <a class="svc" href="${esc(s.href)}">
         <span class="icon" aria-hidden="true">${s.icon}</span>
         <span class="name">${esc(s.name)}</span>
         <span class="desc">${esc(s.desc)}</span>
-      </a>`).join("");
+      </a>`).join("") + `</div>`).join("");
 
     const $ = (id) => document.getElementById(id);
     const PIN_LATER = "pick3_pin_later";
@@ -202,8 +214,10 @@
         const res = await fetch(`${Pick3Account.API}/api/coverage?kind=locked`, { headers: { "X-Pick3-Token": Pick3Account.getToken() } });
         if (!res.ok) return;
         const rows = (await res.json()).reports || [];
-        const desc = document.querySelector("#lockedCard .desc");
-        if (desc && rows.length) desc.innerHTML = `<b style="color:var(--accent, #ff6b35)">열지 않은 문서 ${rows.length}건</b> · 암호 넣고 종류 고르기`;
+        const b = document.getElementById("lockedBanner");
+        if (!b) return;
+        b.hidden = !rows.length;
+        b.innerHTML = `🔒 <b>확인할 문서 ${rows.length}건</b> · 암호를 넣거나 종류를 골라 주세요 →`;
       } catch {}
     }
 
