@@ -508,7 +508,7 @@ async def coverage_run(report_id: int, body: CoverageRun, background: Background
     _cov_progress(report_id, {"stage": 1, "label": "시작"})
     await cov_store.update(user["id"], report_id, status="running", message="")
     background.add_task(_run_coverage, user, row, raw)
-    return {"ok": True, "message": "제안서 작성을 시작했습니다(2~4분)."}
+    return {"ok": True, "message": "제안서 작성을 시작했습니다(2~3분)."}
 
 
 async def _run_coverage(user: dict, row: dict, raw: bytes) -> None:

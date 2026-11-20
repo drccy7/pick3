@@ -86,7 +86,7 @@ def generate_json(model: str, parts: list[dict], schema: dict, temperature: floa
 
 
 def generate_json_stream(model: str, parts: list[dict], schema: dict, on_text, temperature: float = 0.0,
-                         feature: str = "coverage") -> dict:
+                         feature: str = "coverage", thinking: str | None = None) -> dict:
     """Same as generate_json but streamed (SSE): on_text(text_so_far) is called as chunks arrive,
     so callers can show real progress. Falls back to the non-streamed call on any stream error."""
     payload = {
@@ -94,6 +94,8 @@ def generate_json_stream(model: str, parts: list[dict], schema: dict, on_text, t
         "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema,
                              "temperature": temperature},
     }
+    if thinking:  # Gemini 3 thinking level: minimal | low | medium | high
+        payload["generationConfig"]["thinkingConfig"] = {"thinkingLevel": thinking}
     url = f"{BASE}/v1beta/models/{model}:streamGenerateContent"
     text, last = "", {}
     try:

@@ -80,9 +80,9 @@
 
     // Overall % from the server's stage + real counts (stage 1) or typical durations (stage 3).
     function percent(p) {
-      if (p.stage === 1) {  // ~1 min of silent reading, then contracts stream in one by one
-        if (!p.total || !p.done) return 3 + 17 * Math.min(1, p.stage_elapsed / 60);
-        return 20 + 38 * Math.min(p.done, p.total) / p.total;
+      if (p.stage === 1) {  // ~10 s before the first contract, then contracts stream in one by one
+        if (!p.total || !p.done) return 3 + 12 * Math.min(1, p.stage_elapsed / 15);
+        return 15 + 45 * Math.min(p.done, p.total) / p.total;
       }
       if (p.stage === 2) return 62;
       if (p.stage === 3) return 64 + 28 * Math.min(1, p.stage_elapsed / 50);
@@ -98,7 +98,7 @@
       return `<div class="prog">
         <div class="steps">${STEPS.map((n, i) => `<span class="${i + 1 === p.stage ? "now" : i + 1 < p.stage ? "past" : ""}">${i + 1 < p.stage ? "✓ " : ""}${n}</span>`).join("")}</div>
         <div class="bar"><i style="width:${percent(p).toFixed(0)}%"></i></div>
-        <div class="pinfo"><span>${detail}</span><span><b class="tick" data-base="${p.elapsed}" data-at="${Date.now()}">${mmss(p.elapsed)}</b> 경과 · 보통 3~4분</span></div>
+        <div class="pinfo"><span>${detail}</span><span><b class="tick" data-base="${p.elapsed}" data-at="${Date.now()}">${mmss(p.elapsed)}</b> 경과 · 보통 2~3분</span></div>
       </div>`;
     }
     setInterval(() => document.querySelectorAll(".tick").forEach((el) => {

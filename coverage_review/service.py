@@ -57,12 +57,11 @@ def fetch_records(patient: str, user_id: int | None) -> list[dict]:
 Progress = Callable[[dict], None]  # {"stage": 1-4, "label": str, "done": int|None, "total": int|None}
 
 
-def extract(pdf_raw: bytes, model: str | None = None, progress: Progress = lambda p: None) -> dict:
+def _extract_once(pdf_raw: bytes, model: str, progress: Progress, label: str) -> dict:
     """Streamed so the caller sees real progress: contracts read so far / contracts the report says it has."""
-    model = model or os.getenv("COVERAGE_EXTRACT_MODEL", DEFAULT_EXTRACT_MODEL)
     progress({"stage": 1, "label": "보고서 올리는 중"})
     up = gemini.upload_pdf(pdf_raw)
-    progress({"stage": 1, "label": "보고서 읽는 중"})
+    progress({"stage": 1, "label": label})
     seen = {"done": -1, "total": None}
 
     def on_text(t: str) -> None:
@@ -71,12 +70,20 @@ def extract(pdf_raw: bytes, model: str | None = None, progress: Progress = lambd
         done = t.count('"insurer"')  # one per contract object (the key exists only there)
         if (done, total) != (seen["done"], seen["total"]):
             seen.update(done=done, total=total)
-            progress({"stage": 1, "label": "보고서 읽는 중", "done": done, "total": total})
+            progress({"stage": 1, "label": label, "done": done, "total": total})
     try:
         return gemini.generate_json_stream(model, [{"text": prompts.EXTRACT_PROMPT}, gemini.pdf_part(up["uri"])],
-                                           prompts.EXTRACT_SCHEMA, on_text, feature="coverage_extract")
+                                           prompts.EXTRACT_SCHEMA, on_text, feature="coverage_extract",
+                                           thinking=os.getenv("COVERAGE_EXTRACT_THINKING", "minimal"))
     finally:
         gemini.delete_file(up["name"])
+
+
+def extract(pdf_raw: bytes, model: str | None = None, progress: Progress = lambda p: None) -> dict:
+    """Copying tables needs no deep reasoning: thinking is minimal (COVERAGE_EXTRACT_THINKING), which
+    removes ~50 s of silent 'thinking' before the first contract appears."""
+    model = model or os.getenv("COVERAGE_EXTRACT_MODEL", DEFAULT_EXTRACT_MODEL)
+    return _extract_once(pdf_raw, model, progress, "보고서 읽는 중")
 
 
 def analyze(facts: dict, model: str | None = None) -> dict:
