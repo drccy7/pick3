@@ -171,6 +171,39 @@ async def _fill_amountless(rows: list[dict], user_id: int | None, endpoint: str,
         return rows
 
 
+async def check_duplicates(rows: list[dict], user_id: int | None) -> tuple[list[dict], list[dict], list[dict]]:
+    """Same patient, date and amount as a saved row: the same provider (spaces/punctuation ignored) is a repeat
+    of one payment (e.g. a screenshot and a PDF of the same receipt) and is dropped; a different provider is
+    kept but reported, since it may be a misread name. Returns (rows to save, repeats, look-alikes)."""
+    dates = sorted(r["visit_date"] for r in rows if r.get("visit_date"))
+    if not dates:
+        return rows, [], []
+    endpoint, headers = _sb()
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(endpoint, headers=headers, params={
+                "select": "patient,provider,visit_date,amount", "amount": "not.is.null",
+                "user_id": f"eq.{user_id}" if user_id is not None else "is.null",
+                "and": f"(visit_date.gte.{dates[0]},visit_date.lte.{dates[-1]})", "limit": "5000"})
+    except Exception:
+        return rows, [], []
+    if resp.status_code != 200:
+        return rows, [], []
+    saved: dict[tuple, list[str]] = {}
+    for e in resp.json():
+        saved.setdefault((e.get("patient"), e.get("visit_date"), e.get("amount")), []).append(e.get("provider") or "")
+    keep, repeats, alike = [], [], []
+    for r in rows:
+        others = saved.get((r.get("patient"), r["visit_date"], r["amount"]), [])
+        if any(norm_provider(p) == norm_provider(r["provider"]) for p in others):
+            repeats.append(r)
+            continue
+        if others:
+            alike.append({**r, "existing": others[0]})
+        keep.append(r)
+    return keep, repeats, alike
+
+
 async def save_medical_records(rows: list[dict], user_id: int | None, source: str) -> tuple[int, int]:
     """Insert rows for one user; exact repeats (same patient/provider/date/amount) are ignored.
 

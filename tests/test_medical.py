@@ -243,7 +243,7 @@ def test_customer_name_form_field_overrides_screen_and_warns(monkeypatch: pytest
     assert "화면의 이름은 '정치연'" in res["message"]
     assert {r["patient"] for r in seen["posts"][0][1]["json"]} == {"김고객"}
     assert all(r["user_id"] == 7 for r in seen["posts"][0][1]["json"])
-    assert [g for g in seen["gets"] if g[1].get("params", {}).get("amount") != "is.null"] == []  # explicit name: no 'recent patient' lookup
+    assert [g for g in seen["gets"] if g[1].get("params", {}).get("amount") not in ("is.null", "not.is.null")] == []  # explicit name: no 'recent patient' lookup
 
 
 def test_customer_name_on_nameless_screen_has_no_warning(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -344,3 +344,39 @@ def test_shared_link_gets_guidance_without_gemini_or_usage(monkeypatch: pytest.M
                       files={"image": ("text.txt", b"https://example.com/result?t=abc", "text/plain")}).json()
     assert res["status"] == "unsupported" and "전체 페이지" in res["message"]
     assert seen["gemini"] == [] and not any("bump_usage" in u for u, _ in seen["posts"])
+
+
+def test_check_duplicates_drops_repeats_and_flags_lookalikes(monkeypatch) -> None:
+    import asyncio
+    import medical
+
+    class R:
+        status_code = 200
+
+        def json(self):
+            return [{"patient": "홍길동", "visit_date": "2025-12-03", "amount": 310000, "provider": "가나안경 다라점"},
+                    {"patient": "홍길동", "visit_date": "2025-01-26", "amount": 25000, "provider": "오렌즈이수점"}]
+
+    class C:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, headers=None, params=None):
+            assert params["amount"] == "not.is.null"
+            return R()
+
+    monkeypatch.setattr(medical.httpx, "AsyncClient", C)
+    monkeypatch.setattr(medical, "_sb", lambda: ("http://x/rest/v1/t", {}))
+    rows = [{"patient": "홍길동", "visit_date": "2025-12-03", "amount": 310000, "provider": "가나안경다라점", "kind": "안경"},
+            {"patient": "홍길동", "visit_date": "2025-01-26", "amount": 25000, "provider": "오렌지이수점", "kind": "안경"},
+            {"patient": "홍길동", "visit_date": "2025-01-26", "amount": 9000, "provider": "마바약국", "kind": "약국"}]
+    keep, repeats, alike = asyncio.run(medical.check_duplicates(rows, 1))
+    assert [r["provider"] for r in repeats] == ["가나안경다라점"]  # spacing differs only: same payment
+    assert [(a["provider"], a["existing"]) for a in alike] == [("오렌지이수점", "오렌즈이수점")]
+    assert [r["provider"] for r in keep] == ["오렌지이수점", "마바약국"]

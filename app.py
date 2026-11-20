@@ -1451,11 +1451,13 @@ async def _save_medical(user: dict, raw: bytes, mime: str, chosen: str = "") -> 
         if recent:
             patient, assumed = recent, True
             rows = [{**r, "patient": recent} for r in rows]
+    rows_in, repeats, alike = await medical.check_duplicates(rows, user["id"])
     try:
         inserted, duplicates = await medical.save_medical_records(
-            rows, user["id"], "pdf" if mime == "application/pdf" else "image")
+            rows_in, user["id"], "pdf" if mime == "application/pdf" else "image") if rows_in else (0, 0)
     except StorageError as exc:
         return {"status": "error", "message": "❌ 저장 실패 - 저장소 연결 문제입니다.", "detail": str(exc)}
+    duplicates += len(repeats)
 
     who = patient or "이름 없음"
     total = sum(r["amount"] for r in rows)
@@ -1472,6 +1474,9 @@ async def _save_medical(user: dict, raw: bytes, mime: str, chosen: str = "") -> 
         lines.append("⚠ 고객·환자 이름을 찾지 못했습니다. 의료비 화면에서 행을 눌러 이름을 입력하세요.")
     if skipped:
         lines.append(f"⚠ 잘려서 읽지 못한 {skipped}건은 빠졌습니다. 스크롤해서 한 장 더 보내 주세요.")
+    for a in alike[:5]:  # same person, day and amount under another name: maybe the same payment misread
+        lines.append(f"⚠ 같은 날·같은 금액 기록이 이미 있습니다: {a['visit_date']} {a['amount']:,}원 "
+                     f"'{a['existing']}' ↔ 새로 저장 '{a['provider']}'. 같은 결제면 의료비 화면에서 하나를 지우세요.")
     return {"status": "saved", "message": "\n".join(lines), "patient": patient, "patient_assumed": assumed,
             "patient_on_screen": on_screen,
             "inserted": inserted, "duplicates": duplicates, "skipped": skipped, "records": rows}
