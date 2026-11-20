@@ -89,7 +89,7 @@ pytest tests -q        # 전체 (맛집·의료비·처방·PIN)
 | `KAKAO_REST_API_KEY` | 가게 확인·좌표 |
 | `PICK3_DAILY_LIMIT_PER_USER`, `PICK3_DAILY_LIMIT_TOTAL` | 선택. 하루 분석 한도 (기본 30 / 300) |
 | `PICK3_BROWSER` | 서버 브라우저(링크 읽기). **기본 꺼짐**, `on`이면 켬. 꺼져 있으면 링크는 스크린샷 안내 |
-| `COVERAGE_PDF_ENGINE` | 선택. 보장분석 결과 문서: `reportlab`(기본, 브라우저 없이 PDF) · `browser`(Chromium, `PICK3_BROWSER=on` 필요, 아니면 reportlab) · `html` |
+| `COVERAGE_PDF` | 선택. 보장분석 [PDF 보내기]: `on`(기본, 결과 HTML을 Chromium으로 인쇄해 같은 내용의 PDF) · `off` |
 | `PICK3_RENDER_DOMAINS` | 링크로 저장할 때 서버 브라우저가 열 수 있는 사이트(예: `myhom.me`) |
 | `COVERAGE_EXTRACT_MODEL`, `COVERAGE_ANALYZE_MODEL` | 선택. 보장분석 모델(기본 `gemini-3.5-flash` / `gemini-pro-latest`) |
 | `PLAYWRIGHT_BROWSERS_PATH` | `0` (Chromium을 venv 안에 설치) |

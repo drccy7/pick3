@@ -483,7 +483,9 @@ async def coverage_list(kind: str = "", x_pick3_token: Optional[str] = Header(de
                                  "stage_elapsed": int(now - p.get("stage_started", p["started"]))}
             else:
                 r["status"], r["message"] = "error", "중단됐습니다(서버가 다시 시작됨). 다시 작성해 주세요."
-        r["files"] = [{"index": i, "name": f["name"]} for i, f in enumerate(r.pop("results") or [])]
+        # Older runs also stored ReportLab PDFs; only the HTML results are shown (each can be sent as PDF).
+        r["files"] = [{"index": i, "name": f["name"], "pdf": bool(f.get("pdf_path"))}
+                      for i, f in enumerate(r.pop("results") or []) if f["name"].endswith(".html")]
     return {"reports": rows}
 
 
@@ -547,11 +549,17 @@ async def _run_coverage(user: dict, row: dict, raw: bytes) -> None:
             path = f"{base}/result_{i}.{ext}"
             await cov_store.put_file(path, data, _MEDIA[ext])
             results.append({"name": name, "path": path})
+        kept = {f["path"] for f in results}
+        stale = [p for f in row.get("results") or [] for p in (f.get("path"), f.get("pdf_path")) if p and p not in kept]
+        if stale:  # PDFs printed from the previous HTML (and older runs' files) no longer match
+            try:
+                await cov_store.delete_files(stale)
+            except cov_store.StoreError:
+                pass
         c, a, pp = res["customer"], res["analysis"], res["plan"]
         lines = [f"계약 {len(res['facts']['contracts'])}건 · 병의원 기록 {res['records']}건 · "
                  f"청구 후보 {len(a.get('claims', []))}건 · 보완 제안 {len(a.get('gaps', []))}건",
-                 f"제안 후 월 약 {round(pp['total_mid'] / 10000):,}만 원"
-                 + (" · PDF 암호: 생년월일 8자리" if res["encrypted_with_birth_date"] else "")]
+                 f"제안 후 월 약 {round(pp['total_mid'] / 10000):,}만 원"]
         lines += [f"⚠ {w}" for w in res["warnings"][:3]]
         from datetime import datetime, timezone
         await cov_store.update(uid, rid, status="done", message="\n".join(lines), customer_name=c.get("name"),
@@ -651,6 +659,46 @@ async def coverage_file(report_id: int, index: int, x_pick3_token: Optional[str]
                              "Cache-Control": "no-store"})
 
 
+_PDF_LOCKS: dict[int, asyncio.Lock] = {}
+
+
+@app.get("/api/coverage/{report_id}/pdf/{index}")
+async def coverage_pdf(report_id: int, index: int, x_pick3_token: Optional[str] = Header(default=None)) -> Response:
+    """The result HTML printed to PDF (no password). Printed on the first send, then reused until the next run."""
+    user = await _current_user(x_pick3_token)
+    lock = _PDF_LOCKS.setdefault(report_id, asyncio.Lock())
+    async with lock:  # two taps on the same report print once
+        try:
+            row = await cov_store.get(user["id"], report_id)
+            files = (row or {}).get("results") or []
+            if not 0 <= index < len(files) or not files[index]["name"].endswith(".html"):
+                raise HTTPException(status_code=404, detail="파일이 없습니다.")
+            f = files[index]
+            name = f["name"][:-5] + ".pdf"
+            if f.get("pdf_path"):
+                data = await cov_store.get_file(f["pdf_path"])
+            else:
+                if not cov_service.pdf_enabled():
+                    raise HTTPException(status_code=503, detail="PDF 만들기가 꺼져 있습니다.")
+                html = (await cov_store.get_file(f["path"])).decode("utf-8")
+                try:
+                    data = await asyncio.to_thread(cov_service.html_to_pdf, html)
+                except Exception as exc:
+                    raise HTTPException(status_code=503, detail=f"PDF를 만들지 못했습니다({type(exc).__name__}).")
+                pdf_path = f["path"][:-5] + ".pdf"
+                await cov_store.put_file(pdf_path, data, _MEDIA["pdf"])
+                fresh = await cov_store.get(user["id"], report_id)  # a run may have replaced the results meanwhile
+                cur = (fresh or {}).get("results") or []
+                if index < len(cur) and cur[index].get("path") == f["path"] and report_id not in _COV_ACTIVE:
+                    cur[index] = {**cur[index], "pdf_path": pdf_path}
+                    await cov_store.update(user["id"], report_id, results=cur)
+        except cov_store.StoreError as exc:
+            raise _store_failed(exc)
+    return Response(content=data, media_type="application/pdf",
+                    headers={"Content-Disposition": "inline; filename*=UTF-8''" + quote(name),
+                             "Cache-Control": "no-store"})
+
+
 @app.delete("/api/coverage/{report_id}")
 async def coverage_delete(report_id: int, x_pick3_token: Optional[str] = Header(default=None)) -> dict:
     user = await _current_user(x_pick3_token)
@@ -660,7 +708,8 @@ async def coverage_delete(report_id: int, x_pick3_token: Optional[str] = Header(
         row = await cov_store.get(user["id"], report_id)
         if not row:
             raise HTTPException(status_code=404, detail="보고서가 없습니다.")
-        await cov_store.delete_files([row["storage_path"]] + [f["path"] for f in row.get("results") or []])
+        await cov_store.delete_files([row["storage_path"]] + [p for f in row.get("results") or []
+                                                              for p in (f.get("path"), f.get("pdf_path")) if p])
         await cov_store.delete(user["id"], report_id)
     except cov_store.StoreError as exc:
         raise _store_failed(exc)

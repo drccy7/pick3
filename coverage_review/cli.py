@@ -38,10 +38,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--today")
     ap.add_argument("--refresh", choices=["extract", "analysis", "all"])
-    ap.add_argument("--encrypt", action="store_true", help="결과 PDF에 생년월일(YYYYMMDD) 암호")
+    ap.add_argument("--no-pdf", action="store_true", help="HTML만 만들기(PDF 인쇄 생략)")
     args = ap.parse_args(argv)
     _load_env()
-    os.environ.setdefault("PICK3_BROWSER", "on")  # only used with COVERAGE_PDF_ENGINE=browser; default is ReportLab PDF
     sys.stdout.reconfigure(encoding="utf-8")
 
     out = pathlib.Path(args.out)
@@ -58,16 +57,18 @@ def main(argv: list[str] | None = None) -> int:
     raw = pdf_io.decrypt(pathlib.Path(args.pdf).read_bytes(), args.password)
     records = json.loads(pathlib.Path(args.records_json).read_text(encoding="utf-8")) if args.records_json else None
     res = service.run(raw, user_id=args.user_id, today=parse_date(args.today) if args.today else date.today(),
-                      patient=args.patient, records=records, rep=rep, analysis=analysis, encrypt=args.encrypt,
+                      patient=args.patient, records=records, rep=rep, analysis=analysis,
                       progress=lambda p: print(f"· {p['label']}" + (f" {p['done']}/{p.get('total') or '?'}" if p.get("done") is not None else ""), flush=True))
     for name, key in (("extract.json", "extract"), ("facts.json", "facts"), ("analysis.json", "analysis"),
                       ("plan.json", "plan")):
         (work / name).write_text(json.dumps(res[key], ensure_ascii=False, indent=1, default=str), encoding="utf-8")
     for fn, h in res["html"].items():
-        (work / (fn + ".html")).write_text(h, encoding="utf-8")
-    for fn, data in res["docs"].items():
-        (out / fn).write_bytes(data)
+        (out / fn).write_text(h, encoding="utf-8")
         print("  →", out / fn)
+        if not args.no_pdf:
+            pdf = out / (fn[:-5] + ".pdf")
+            pdf.write_bytes(service.html_to_pdf(h))
+            print("  →", pdf)
     for w in res["warnings"]:
         print("  ! ", w)
     return 0

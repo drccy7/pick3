@@ -145,51 +145,15 @@ def test_money_formatters() -> None:
     assert render.manwon(52_380) == "5.2만" and render.manwon(1_172_238) == "117만"
 
 
-def _docs():
-    from coverage_review import pdf_render
-    f = _facts()
-    a, w = plan.sanitize(_analysis(), f)
-    p = plan.premium_plan(f, a)
-    return pdf_render.analysis_pdf(f, a, p, w), pdf_render.proposal_pdf(f, a, p, w)
-
-
-def test_reportlab_pdfs_without_browser() -> None:
-    import io
-
-    import pdfplumber
-    ana, prop = _docs()
-    assert ana.startswith(b"%PDF") and prop.startswith(b"%PDF")
-    for raw, pages, words in ((ana, None, ("홍길동", "종합", "청구할 만한 내용", "보장 전후 비교")),
-                              (prop, 2, ("홍길동", "제안 전 확인 필수 사항", "임플란트 보장 없음", "제안 후 합계"))):
-        with pdfplumber.open(io.BytesIO(raw)) as pdf:
-            assert len(pdf.pages) == pages if pages else len(pdf.pages) >= 2
-            text = "".join((pg.extract_text() or "") for pg in pdf.pages).replace(" ", "")
-            fonts = {ch["fontname"].split("+")[-1] for pg in pdf.pages for ch in pg.chars}
-        for w in words:
-            assert w.replace(" ", "") in text, w
-        assert fonts and all(fn.startswith("NotoSansKR") for fn in fonts), fonts  # no Helvetica fallback
-        assert "(cid:" not in text
-
-
-def test_service_default_engine_makes_html_and_encrypted_pdfs(monkeypatch) -> None:
-    from coverage_review import pdf_io, service
-    monkeypatch.delenv("COVERAGE_PDF_ENGINE", raising=False)
-    monkeypatch.delenv("PICK3_BROWSER", raising=False)
+def test_service_makes_html_only(monkeypatch) -> None:
+    from coverage_review import service
     res = service.run(b"", user_id=None, today=TODAY, records=RECORDS, rep=REPORT, analysis=_analysis())
-    exts = [k.rsplit(".", 1)[-1] for k in res["docs"]]
-    assert exts == ["html", "html", "pdf", "pdf"] and res["encrypted_with_birth_date"]  # HTML to view, PDF to send
-    for name, raw in res["docs"].items():
-        if name.endswith(".html"):
-            assert "홍길동" in raw.decode("utf-8")
-            continue
-        assert pdf_io.is_encrypted(raw)
-        assert "홍길동" in "".join(pdf_io.page_texts(pdf_io.decrypt(raw, "19590610")))
-    assert len(res["html"]) == 2
-    monkeypatch.setenv("COVERAGE_PDF_ENGINE", "html")
-    res = service.run(b"", user_id=None, today=TODAY, records=RECORDS, rep=REPORT, analysis=_analysis())
-    assert all(k.endswith(".html") for k in res["docs"]) and not res["encrypted_with_birth_date"]
-    monkeypatch.setenv("COVERAGE_PDF_ENGINE", "browser")  # no browser on this box → still ReportLab PDFs
-    assert service.pdf_engine() == "reportlab"
+    assert list(res["docs"]) == list(res["html"]) and all(k.endswith(".html") for k in res["docs"])
+    assert len(res["docs"]) == 2 and all("홍길동" in v.decode("utf-8") for v in res["docs"].values())
+    monkeypatch.setenv("COVERAGE_PDF", "off")
+    assert not service.pdf_enabled()
+    monkeypatch.delenv("COVERAGE_PDF")
+    assert service.pdf_enabled()
 
 
 def _with_indemnity_start(start: str, cap_manwon: int = 20) -> dict:
@@ -248,10 +212,6 @@ def test_diagnoses_from_nhis_rows_feed_facts_and_documents() -> None:
     assert "D1" in a2["claims"][0]["evidence"]
     p = plan.premium_plan(f, a2)
     assert "고혈압(I109)" in render.html("analysis", f, a2, p, w2)
-    from coverage_review import pdf_render, pdf_io
-    import io, pdfplumber
-    with pdfplumber.open(io.BytesIO(pdf_render.analysis_pdf(f, a2, p, w2))) as pdf:
-        assert "I109" in "".join(pg.extract_text() or "" for pg in pdf.pages)
 
 
 def test_no_diagnoses_without_nhis_data() -> None:

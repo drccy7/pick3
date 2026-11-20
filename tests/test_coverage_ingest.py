@@ -76,7 +76,6 @@ def store(monkeypatch: pytest.MonkeyPatch):
         return {"customer": {"name": "홍길동", "birth_date": "1960-01-01"}, "records": 12,
                 "facts": {"contracts": [1, 2, 3]}, "extract": {"customer": {"name": "홍길동"}},
                 "analysis": {"claims": [1], "gaps": [1, 2]}, "plan": {"total_mid": 1_130_000}, "warnings": [],
-                "encrypted_with_birth_date": False,
                 "docs": {"홍길동_보장분석_청구및제안_2026-11-20.html": b"<html>a</html>",
                          "홍길동_맞춤보장제안_2026-11-20.html": b"<html>b</html>"}}
 
@@ -128,6 +127,42 @@ def test_rerun_reuses_the_extract_without_password(monkeypatch, store) -> None:
     client.post(f"/api/coverage/{rid}/run", headers=AUTH, json={"password": "pw"})
     again = client.post(f"/api/coverage/{rid}/run", headers=AUTH, json={}).json()
     assert again["ok"] and store.runs[-1]["rep"] == {"customer": {"name": "홍길동"}} and store.runs[-1]["raw"] == b""
+
+
+def test_pdf_is_printed_from_the_result_html_once_and_dropped_on_rerun(monkeypatch, store) -> None:
+    import app
+    _fake(monkeypatch, SCREEN)
+    monkeypatch.setattr(app.cov_service, "is_coverage_report", lambda raw: True)
+    printed = []
+    monkeypatch.setattr(app.cov_service, "html_to_pdf", lambda h: printed.append(h) or b"%PDF-" + h.encode())
+    rid = _share(_pdf("pw"))["report_id"]
+    client.post(f"/api/coverage/{rid}/run", headers=AUTH, json={"password": "pw"})
+    assert [f["pdf"] for f in _list()[0]["files"]] == [False, False]
+    for _ in range(2):
+        r = client.get(f"/api/coverage/{rid}/pdf/1", headers=AUTH)
+        assert r.status_code == 200 and r.content == b"%PDF-<html>b</html>"
+        assert r.headers["content-type"] == "application/pdf" and ".pdf" in r.headers["content-disposition"]
+    assert printed == ["<html>b</html>"]  # second send reuses the stored PDF
+    assert [f["pdf"] for f in _list()[0]["files"]] == [False, True]
+    pdf_path = store.rows[rid]["results"][1]["pdf_path"]
+    client.post(f"/api/coverage/{rid}/run", headers=AUTH, json={})  # new HTML → old PDF no longer matches
+    assert pdf_path not in store.files and [f["pdf"] for f in _list()[0]["files"]] == [False, False]
+    monkeypatch.setenv("COVERAGE_PDF", "off")
+    assert client.get(f"/api/coverage/{rid}/pdf/0", headers=AUTH).status_code == 503
+
+
+def test_old_runs_show_only_html_results(monkeypatch, store) -> None:
+    _fake(monkeypatch, SCREEN)
+    _share(_pdf("pw"))
+    uid = store.rows[1]["user_id"]
+    store.rows.clear()
+    store.rows[9] = {"id": 9, "user_id": uid, "filename": "a.pdf", "size_bytes": 1, "encrypted": False,
+                     "storage_path": "x/a.pdf", "status": "done", "message": "", "extract": None,
+                     "created_at": "2026-11-20T00:00",
+                     "results": [{"name": "a.html", "path": "x/result_0.html"}, {"name": "b.html", "path": "x/result_1.html"},
+                                 {"name": "a.pdf", "path": "x/result_2.pdf"}, {"name": "b.pdf", "path": "x/result_3.pdf"}]}
+    assert [(f["index"], f["name"]) for f in _list()[0]["files"]] == [(0, "a.html"), (1, "b.html")]
+    assert client.get("/api/coverage/9/pdf/2", headers=AUTH).status_code == 404
 
 
 def test_encrypted_pdf_that_is_not_a_report_goes_to_medical(monkeypatch, store) -> None:

@@ -141,15 +141,16 @@
       const meta = [`${day(r.created_at)} 저장`, r.size_bytes ? `${(r.size_bytes / 1048576).toFixed(1)}MB` : "",
                     r.encrypted ? "🔒 암호 PDF" : "", r.records_count != null ? `병의원 기록 ${r.records_count}건` : "",
                     r.analyzed_at ? `작성 ${day(r.analyzed_at)}` : "", usageText(r.usage)].filter(Boolean).join(" · ");
-      // HTML opens for reading on the phone; the PDFs of the same run (birth-date password) are for sending.
+      // HTML opens for reading on the phone; [PDF 보내기] sends that same HTML printed to PDF (no password).
       const kind = (f) => (f.name.includes("맞춤") ? "제안서" : "분석서");
       const btn = (f, label) =>
         `<button class="file" type="button" data-id="${r.id}" data-i="${f.index}" data-name="${esc(f.name)}">${label}</button>`;
-      const all = r.files || [];
-      const htmls = all.filter((f) => !f.name.endsWith(".pdf")), pdfs = all.filter((f) => f.name.endsWith(".pdf"));
+      const htmls = r.files || [];
       const files = htmls.map((f) => btn(f, `📄 ${kind(f)}`)).join("");
-      const pdfRow = pdfs.length ? `<div class="row pdfrow"><span class="pdflabel">PDF 보내기 (카톡 등 · 암호 생년월일)</span>` +
-        pdfs.map((f) => btn(f, `${kind(f)} PDF`)).join("") + `</div>` : "";
+      const pdfBtn = (f) => `<button class="file pdf" type="button" data-id="${r.id}" data-i="${f.index}" ` +
+        `data-name="${esc(f.name.replace(/\.html$/, ".pdf"))}" data-ready="${f.pdf ? 1 : 0}">${kind(f)} PDF</button>`;
+      const pdfRow = htmls.length && !running ? `<div class="row pdfrow"><span class="pdflabel">PDF 보내기 (카톡 등)</span>` +
+        htmls.map(pdfBtn).join("") + `</div>` : "";
       return `<article class="card ${running ? "running" : ""}" data-id="${r.id}">
         <div class="name">${esc(title)}</div>
         <div class="meta">${esc(meta)}</div>
@@ -210,21 +211,22 @@
       load();
     });
 
-    // PDFs are fetched ahead of time: iOS only opens the share sheet during the tap itself, so the file
-    // must already be in memory. Sharing a File (not a link) keeps its name and sends no extra URL.
+    // PDFs already printed are fetched ahead of time: iOS only opens the share sheet during the tap itself,
+    // so the file must already be in memory. Sharing a File (not a link) keeps its name and sends no extra URL.
+    // A PDF not printed yet is made on the first tap (a few seconds); the next tap sends it.
     const pdfCache = new Map();
     async function fetchFile(id, i, name) {
       const key = `${id}:${i}`;
       if (pdfCache.has(key)) return pdfCache.get(key);
-      const res = await fetch(`${Pick3Account.API}/api/coverage/${id}/files/${i}`,
+      const res = await fetch(`${Pick3Account.API}/api/coverage/${id}/pdf/${i}`,
                               { headers: { "X-Pick3-Token": Pick3Account.getToken() } });
-      if (!res.ok) throw new Error(res.status);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.status);
       const file = new File([await res.blob()], name, { type: "application/pdf" });
       pdfCache.set(key, file);
       return file;
     }
     function prefetchPdfs() {
-      document.querySelectorAll('.file[data-name$=".pdf"]').forEach((b) =>
+      document.querySelectorAll('.file.pdf[data-ready="1"]').forEach((b) =>
         fetchFile(b.dataset.id, b.dataset.i, b.dataset.name).catch(() => {}));
     }
     async function sharePdf(b) {
@@ -234,16 +236,21 @@
         try { await navigator.share({ files: [ready] }); } catch (err) { /* closed the sheet */ }
         return;
       }
+      const label = b.textContent;
       try {
+        if (!ready) { b.disabled = true; b.textContent = "PDF 만드는 중…"; }
         const file = ready || await fetchFile(b.dataset.id, b.dataset.i, b.dataset.name);
+        b.disabled = false;
         if (navigator.canShare && navigator.canShare({ files: [file] })) {
-          b.textContent = "📤 한 번 더 누르면 보내기";  // the tap that waited for the download no longer counts
+          b.textContent = "📤 한 번 더 누르면 보내기";  // the tap that waited for the PDF no longer counts
           return;
         }
+        b.textContent = label;
         const a = document.createElement("a");  // desktop: save with its name
         a.href = URL.createObjectURL(file); a.download = file.name; a.click();
-      } catch {
-        alert("파일을 받지 못했습니다. 잠시 후 다시 해 주세요.");
+      } catch (err) {
+        b.disabled = false; b.textContent = label;
+        alert("PDF를 만들지 못했습니다. 잠시 후 다시 해 주세요." + (err && err.message && isNaN(err.message) ? "\n" + err.message : ""));
       }
     }
 
@@ -281,7 +288,7 @@
 
     $("list").addEventListener("click", async (e) => {
       const f = e.target.closest(".file");
-      if (f && f.dataset.name.endsWith(".pdf")) {  // PDFs are for sending: share the named file itself
+      if (f && f.classList.contains("pdf")) {  // PDFs are for sending: share the named file itself
         await sharePdf(f);
         return;
       }
@@ -291,8 +298,7 @@
           const res = await fetch(`${Pick3Account.API}/api/coverage/${f.dataset.id}/files/${f.dataset.i}`,
                                   { headers: { "X-Pick3-Token": Pick3Account.getToken() } });
           if (!res.ok) throw new Error(res.status);
-          const type = f.dataset.name.endsWith(".html") ? "text/html" : "application/pdf";
-          const url = URL.createObjectURL(new File([await res.blob()], f.dataset.name, { type }));
+          const url = URL.createObjectURL(new File([await res.blob()], f.dataset.name, { type: "text/html" }));
           if (win) win.location.href = url;
           else { const a = document.createElement("a"); a.href = url; a.download = f.dataset.name; a.click(); }
         } catch {

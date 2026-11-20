@@ -51,7 +51,7 @@ def env() -> Environment:
 
 
 def lookups(facts: dict, analysis: dict, plan: dict) -> tuple[dict, dict]:
-    """(products by key, premium range by product key) shared by the HTML and ReportLab renderers."""
+    """(products by key, premium range by product key) for the templates."""
     prod = {p["key"]: p for p in facts["products"]}
     adds = {a["key"]: a for a in plan["adds"]}
     for g in analysis["gaps"]:  # gaps whose premium range is missing still render
@@ -85,7 +85,7 @@ def to_pdf(pages: dict[str, str]) -> dict[str, bytes]:
 
     out = {}
     with sync_playwright() as p:
-        b = p.chromium.launch()
+        b = p.chromium.launch(args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"])
         pg = b.new_page()
         for name, doc in pages.items():
             pg.set_content(doc.replace("<head>", "<head>" + _font_css(), 1), wait_until="load", timeout=60000)

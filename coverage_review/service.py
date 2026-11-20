@@ -12,22 +12,19 @@ from typing import Callable
 import httpx
 import pdfplumber
 
-from . import gemini, pdf_io, pdf_render, plan, prompts, render
+from . import gemini, pdf_io, plan, prompts, render
 from .facts import build, load_rules
 
 
-def browser_enabled() -> bool:
-    """Same switch as link_render.browser_enabled (PICK3_BROWSER=on); the CLI always has a browser locally."""
-    return os.getenv("PICK3_BROWSER", "off").strip().lower() in ("on", "1", "true", "yes")
+def pdf_enabled() -> bool:
+    """COVERAGE_PDF=off turns off printing the HTML to PDF (Chromium, launched only while printing)."""
+    return os.getenv("COVERAGE_PDF", "on").strip().lower() not in ("off", "0", "false", "no")
 
 
-def pdf_engine() -> str:
-    """COVERAGE_PDF_ENGINE: reportlab (default, pure Python) | browser (Chromium, needs PICK3_BROWSER=on) | html.
-    'browser' without a browser falls back to reportlab."""
-    e = os.getenv("COVERAGE_PDF_ENGINE", "reportlab").strip().lower()
-    if e == "html":
-        return "html"
-    return "browser" if e == "browser" and browser_enabled() else "reportlab"
+def html_to_pdf(html: str) -> bytes:
+    """Print one stored result HTML to PDF, so the PDF always matches what the phone shows."""
+    with _BROWSER:
+        return render.to_pdf({"doc": html})["doc"]
 
 
 DEFAULT_EXTRACT_MODEL = "gemini-3.5-flash"
@@ -215,9 +212,8 @@ def check_extract(rep: dict) -> list[str]:
 
 def run(pdf_raw: bytes, *, user_id: int | None, today: date | None = None, patient: str | None = None,
         records: list[dict] | None = None, rep: dict | None = None, analysis: dict | None = None,
-        overrides: dict | None = None,
-        encrypt: bool = True, progress: Progress = lambda p: None) -> dict:
-    """Decrypted report PDF → {customer, facts, analysis, plan, warnings, docs: {filename: pdf bytes}}.
+        overrides: dict | None = None, progress: Progress = lambda p: None) -> dict:
+    """Decrypted report PDF → {customer, facts, analysis, plan, warnings, docs: {filename.html: bytes}}.
 
     `rep` / `analysis` let the CLI reuse cached steps. Records default to this user's rows for the
     report's customer name (no cross-account matching).
@@ -246,24 +242,9 @@ def run(pdf_raw: bytes, *, user_id: int | None, today: date | None = None, patie
     pp = plan.premium_plan(facts, clean, rules)
     progress({"stage": 4, "label": "문서 만드는 중"})
     who = facts["customer"]["name"] or "고객"
-    pages = {f"{who}_보장분석_청구및제안_{today}.pdf": render.html("analysis", facts, clean, pp, warnings),
-             f"{who}_맞춤보장제안_{today}.pdf": render.html("proposal", facts, clean, pp, warnings)}
-    pw = (facts["customer"].get("birth_date") or "").replace("-", "")
-    # HTML is the default view on the phone; PDFs of the same run are kept for sending to the customer.
-    engine = pdf_engine()
-    html_docs = {k[:-4] + ".html": v.encode("utf-8") for k, v in pages.items()}
-    pdfs: dict[str, bytes] = {}
-    if engine == "reportlab":
-        names = list(pages)
-        pdfs = {names[0]: pdf_render.analysis_pdf(facts, clean, pp, warnings),
-                names[1]: pdf_render.proposal_pdf(facts, clean, pp, warnings)}
-    elif engine == "browser":
-        with _BROWSER:
-            pdfs = render.to_pdf(pages)
-    if encrypt and pw:
-        pdfs = {k: pdf_io.encrypt(v, pw) for k, v in pdfs.items()}
-    encrypt = bool(pdfs) and encrypt
-    docs = {**html_docs, **pdfs}
+    # One source: the HTML is what the phone shows, and the PDF for sending is printed from it (html_to_pdf).
+    pages = {f"{who}_보장분석_청구및제안_{today}.html": render.html("analysis", facts, clean, pp, warnings),
+             f"{who}_맞춤보장제안_{today}.html": render.html("proposal", facts, clean, pp, warnings)}
     return {"customer": facts["customer"], "records": len(records), "extract": rep, "facts": facts,
-            "analysis": raw_analysis, "plan": pp, "warnings": warnings, "docs": docs, "html": pages,
-            "encrypted_with_birth_date": bool(encrypt and pw)}
+            "analysis": raw_analysis, "plan": pp, "warnings": warnings, "html": pages,
+            "docs": {k: v.encode("utf-8") for k, v in pages.items()}}
