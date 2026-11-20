@@ -250,3 +250,30 @@ def test_parallel_read_falls_back_when_a_contract_is_missing(monkeypatch) -> Non
     seen = []
     rep = service.extract(b"%PDF", progress=seen.append)
     assert rep["_read"] == {"mode": "single"} and any("다시 읽는" in p["label"] for p in seen)
+
+
+def _share_named(raw: bytes, name: str) -> dict:
+    return client.post("/api/ingest/screenshot", headers=AUTH,
+                       files={"image": (name, raw, "application/pdf")}).json()
+
+
+def test_encrypted_nhis_pdf_waits_on_the_medical_page_and_is_cleaned_up(monkeypatch, store) -> None:
+    import app
+    _fake(monkeypatch, SCREEN)
+    res = _share_named(_pdf("700101"), "20261120요양급여내역20261120013720.pdf")
+    assert res["status"] == "saved" and "의료비 기록" in res["message"]
+    assert _list() == []  # not on the 보장분석 page
+    med = client.get("/api/coverage?kind=medical", headers=AUTH).json()["reports"]
+    assert len(med) == 1 and med[0]["status"] == "stored"
+    monkeypatch.setattr(app.cov_service, "is_coverage_report", lambda raw: False)
+
+    async def fake_medical(user, raw, mime, chosen, filename):
+        return {"status": "saved", "message": "🩺 건강보험 요양급여내역 · 진료 7건"}
+    monkeypatch.setattr(app, "_save_medical_document", fake_medical)
+    rid = med[0]["id"]
+    assert client.post(f"/api/coverage/{rid}/run", headers=AUTH, json={"password": "700101"}).json()["ok"]
+    row = client.get("/api/coverage?kind=medical", headers=AUTH).json()["reports"][0]
+    assert row["status"] == "other" and "진료 7건" in row["message"] and "보장분석 보고서가 아니라" not in row["message"]
+    assert store.files == {}  # the health-data PDF is deleted once saved
+    again = client.post(f"/api/coverage/{rid}/run", headers=AUTH, json={"password": "700101"}).json()
+    assert not again["ok"] and "이미" in again["message"]

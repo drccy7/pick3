@@ -421,6 +421,12 @@ def _cov_progress(rid: int, p: dict) -> None:
     _COV_ACTIVE[rid] = {"started": cur["started"], "stage_started": stage_started, "done": None, "total": None, **p}
 
 
+def _doc_hint(filename: str | None) -> str:
+    """What an encrypted PDF probably is, from its file name (the content can't be read before the password)."""
+    name = (filename or "").replace(" ", "")
+    return "nhis" if "요양급여" in name else ""
+
+
 async def _store_coverage(user: dict, raw: bytes, filename: str | None, encrypted: bool) -> dict:
     path = f"{user.get('id')}/{secrets.token_hex(8)}/original.pdf"
     try:
@@ -429,7 +435,11 @@ async def _store_coverage(user: dict, raw: bytes, filename: str | None, encrypte
     except cov_store.StoreError as exc:
         return {"status": "error", "service": "coverage", "message": "❌ 보장분석 보고서를 저장하지 못했습니다.",
                 "detail": str(exc)}
-    if encrypted:
+    if encrypted and _doc_hint(filename) == "nhis":
+        lines = ["🩺 건강보험 요양급여내역(암호 PDF)을 받았습니다.",
+                 "Pick3 → 🧾 의료비 기록 화면 위쪽에서 암호(보통 생년월일 6자리)를 넣으면",
+                 "진단명과 함께 의료비 기록으로 저장합니다."]
+    elif encrypted:
         lines = ["🔒 암호가 걸린 PDF를 저장했습니다.",
                  "Pick3 → 📋 보장분석에서 암호를 넣어 주세요(보통 생년월일).",
                  "보장분석 보고서면 제안서를, 요양급여내역·의료비 PDF면 의료비 기록으로 처리합니다."]
@@ -444,12 +454,15 @@ def _store_failed(exc: Exception) -> HTTPException:
 
 
 @app.get("/api/coverage")
-async def coverage_list(x_pick3_token: Optional[str] = Header(default=None)) -> dict:
+async def coverage_list(kind: str = "", x_pick3_token: Optional[str] = Header(default=None)) -> dict:
+    """Stored report PDFs. kind=medical: only encrypted 요양급여내역 waiting on the 의료비 page."""
     user = await _current_user(x_pick3_token)
     try:
         rows = await cov_store.list_reports(user["id"])
     except cov_store.StoreError as exc:
         raise _store_failed(exc)
+    want = "nhis" if kind == "medical" else ""
+    rows = [r for r in rows if _doc_hint(r.get("filename")) == want]
     usage_by_ref: dict[str, list] = {}
     for u in await gemini_usage.fetch_rows(user["id"], ref_prefix="coverage:"):
         usage_by_ref.setdefault(u["ref"], []).append(u)
@@ -488,6 +501,8 @@ async def coverage_run(report_id: int, body: CoverageRun, background: Background
         row = await cov_store.get(user["id"], report_id)
         if not row:
             raise HTTPException(status_code=404, detail="보고서가 없습니다.")
+        if row.get("status") == "other":
+            return {"ok": False, "message": "이미 의료비 기록으로 처리했습니다. 다시 하려면 PDF를 다시 공유해 주세요."}
         raw = b""
         if not row.get("extract"):  # first run: the PDF must be read (password needed if encrypted)
             raw = await cov_store.get_file(row["storage_path"])
@@ -559,8 +574,12 @@ async def _coverage_as_medical(user: dict, row: dict, raw: bytes) -> None:
             result = {"message": "❌ 의료비·처방 PDF가 너무 큽니다(15MB 초과)."}
         else:
             result = await _save_medical_document(user, raw, "application/pdf", "", row.get("filename"))
+        if result.get("status") == "saved":
+            await cov_store.delete_files([row["storage_path"]])  # done: don't keep the health-data PDF
         await cov_store.update(user["id"], rid, status="other",
-                               message=result.get("message", "") + "\n(보장분석 보고서가 아니라 의료비·처방으로 처리했습니다. 이 항목은 지워도 됩니다.)")
+                               message=result.get("message", "") + (
+                                   "" if _doc_hint(row.get("filename")) == "nhis" else
+                                   "\n(보장분석 보고서가 아니라 의료비·처방으로 처리했습니다. 이 항목은 지워도 됩니다.)"))
     except Exception as exc:
         try:
             await cov_store.update(user["id"], rid, status="error", message=f"❌ 처리 실패: {type(exc).__name__}")

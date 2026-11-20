@@ -64,6 +64,13 @@
     .msg { margin-top: 16px; color: var(--muted); font-size: 14px; }
     .err { color: var(--danger); }
       td .dx { color: var(--muted, #9aa3b2); font-size: 12px; margin-top: 2px; }
+      #pending { margin: 10px 0 14px; display: grid; gap: 8px; }
+      .pcard { border: 1px solid var(--border, #2c3342); border-radius: 12px; padding: 10px 12px; }
+      .pcard .t { font-weight: 700; font-size: 14px; }
+      .pcard .m { white-space: pre-line; font-size: 13px; margin-top: 4px; color: var(--muted, #9aa3b2); }
+      .pcard form { display: flex; gap: 6px; margin-top: 8px; }
+      .pcard input { flex: 1; min-width: 0; font-size: 16px; padding: 8px 10px; border-radius: 8px; }
+      .pcard .x { background: none; border: 0; color: var(--muted, #9aa3b2); text-decoration: underline; font-size: 12px; }
   </style>
 </head>
 <body>
@@ -72,6 +79,8 @@
     <a class="back" href="./">← 홈</a>
   </div>
   <p class="sub" id="who">병원·약국 결제 내역을 고객·환자, 연도별로 정리합니다.</p>
+
+  <section id="pending" hidden></section>
 
   <div class="bar">
     <select id="patientSel" aria-label="고객·환자"><option value="">전체 고객·환자</option></select>
@@ -194,6 +203,53 @@
       document.getElementById("msg").textContent = rows.length ? "" : "기록이 없습니다. 단축어 '의료비 저장'으로 결제 내역 화면을 공유해 보세요.";
     }
 
+    // Encrypted 건강보험 요양급여내역 shared via the Shortcut wait here for their password.
+    let pendTimer = null, pendWaiting = false;
+    async function loadPending() {
+      clearTimeout(pendTimer);
+      const box = document.getElementById("pending");
+      if (box.contains(document.activeElement) && document.activeElement.tagName === "INPUT") {
+        pendTimer = setTimeout(loadPending, 3000); return;
+      }
+      let rows = [];
+      try {
+        const res = await fetch(`${API}/api/coverage?kind=medical`, { headers: { "X-Pick3-Token": token() } });
+        if (res.ok) rows = (await res.json()).reports || [];
+      } catch { return; }
+      box.hidden = !rows.length;
+      box.innerHTML = rows.map((r) => {
+        const running = r.status === "running";
+        const head = r.status === "other" ? "🩺 요양급여내역 처리 완료" : running ? "🩺 요양급여내역 읽는 중…" : "🔒 요양급여내역 · 암호를 넣어 주세요";
+        return `<div class="pcard" data-id="${r.id}"><div class="t">${head}</div>
+          <div class="m">${esc(r.message || r.filename || "")}</div>
+          ${r.status === "stored" || r.status === "error" ? `<form class="pw" data-id="${r.id}">
+            <input type="password" inputmode="numeric" autocomplete="off" placeholder="암호 (보통 생년월일 6자리)" required />
+            <button class="primary" type="submit">저장</button></form>` : ""}
+          ${running ? "" : `<button class="x" type="button" data-id="${r.id}">목록에서 지우기</button>`}</div>`;
+      }).join("");
+      if (rows.some((r) => r.status === "running")) { pendWaiting = true; pendTimer = setTimeout(loadPending, 2000); }
+      else if (pendWaiting) { pendWaiting = false; load(); }  // finished: show the new rows
+    }
+    document.getElementById("pending").addEventListener("submit", async (e) => {
+      const f = e.target.closest(".pw"); if (!f) return;
+      e.preventDefault();
+      f.querySelector("button").disabled = true;
+      const res = await fetch(`${API}/api/coverage/${f.dataset.id}/run`, {
+        method: "POST", headers: { "Content-Type": "application/json", "X-Pick3-Token": token() },
+        body: JSON.stringify({ password: f.querySelector("input").value }),
+      }).catch(() => null);
+      const d = res ? await res.json().catch(() => ({})) : {};
+      if (!d.ok) { alert(d.message || d.detail || "처리하지 못했습니다."); f.querySelector("button").disabled = false; return; }
+      document.activeElement.blur();
+      pendWaiting = true;
+      loadPending();
+    });
+    document.getElementById("pending").addEventListener("click", async (e) => {
+      const b = e.target.closest(".x"); if (!b) return;
+      await fetch(`${API}/api/coverage/${b.dataset.id}`, { method: "DELETE", headers: { "X-Pick3-Token": token() } }).catch(() => null);
+      loadPending();
+    });
+
     async function load() {
       await Pick3Account.ready;
       const t = token();
@@ -206,6 +262,7 @@
         const data = await res.json();
         all = data.items;
         document.getElementById("who").textContent = `${data.user} 님 · ${data.count}건`;
+        if (!pendTimer) loadPending();
         refreshFilters();
         render();
       } catch (e) {
