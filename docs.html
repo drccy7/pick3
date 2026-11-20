@@ -53,6 +53,7 @@
     .err { color: var(--danger); font-size: 13px; margin-top: 6px; min-height: 1em; white-space: pre-line; }
     .done { background: var(--surface-2); border-radius: 12px; padding: 11px 13px; font-size: 13.5px;
       white-space: pre-line; margin-top: 12px; }
+    .bulk { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 4px 14px 13px; margin-top: 12px; }
     .empty { color: var(--muted); font-size: 14px; margin-top: 18px; line-height: 1.6; }
   </style>
 </head>
@@ -62,14 +63,22 @@
   <p class="sub" id="lead"></p>
   <p class="sub" id="state">불러오는 중…</p>
   <div class="done" id="done" hidden></div>
+  <div class="bulk" id="bulk" hidden>
+    <form class="row" id="openAll" hidden>
+      <input type="password" inputmode="numeric" autocomplete="off" placeholder="모든 암호 문서에 같은 암호" required />
+      <button class="btn" type="submit">같은 암호로 모두 열기</button>
+    </form>
+    <div class="row" id="saveAllRow" hidden><button class="btn" id="saveAll" type="button">추정대로 모두 저장</button>
+      <span class="hint" style="margin-top:0">추정이 없는 문서는 남겨 둡니다.</span></div>
+  </div>
   <div class="list" id="list"></div>
 
   <script src="account.js"></script>
   <script>
     // One page for the document boxes: ?box=locked (암호 문서함) | checkup (건강검진).
     const BOXES = {
-      locked: { title: "🔒 암호 문서", lead: "암호가 걸린 PDF는 여기에 모입니다. 암호를 넣으면 Pick3가 종류를 추정하니, 확인하고 저장하세요.",
-                empty: "열지 않은 암호 문서가 없습니다." },
+      locked: { title: "🔒 확인할 문서", lead: "암호가 걸린 PDF와 Pick3가 종류를 정하지 못한 PDF가 여기에 모입니다. 암호를 넣으면 Pick3가 종류를 추정하니, 확인하고 저장하세요.",
+                empty: "확인할 문서가 없습니다." },
       mhr: { title: "📱 나의건강기록", lead: "나의건강기록 앱에서 내보낸 PDF 원본입니다. 진료이력은 의료비 기록에, 투약이력은 처방 기록에 넣었습니다.",
              empty: "저장된 나의건강기록이 없습니다.<br>나의건강기록 앱 → PDF 저장 → 공유 → <b>Pick3</b> 를 고르세요." },
       checkup: { title: "🩺 건강검진", lead: "공유한 건강검진 결과입니다. (분석 기능은 준비 중)",
@@ -138,7 +147,40 @@
       const rows = data.reports || [];
       $("state").textContent = rows.length ? `${rows.length}건` : "";
       $("list").innerHTML = rows.length ? rows.map(card).join("") : `<p class="empty">${BOXES[box].empty}</p>`;
+      if (box === "locked") {  // bulk actions, e.g. 요양급여내역 by year with one password
+        const locked = rows.filter((r) => r.encrypted).length, guessed = rows.filter((r) => !r.encrypted && r.suggested).length;
+        $("openAll").hidden = locked < 2; $("saveAllRow").hidden = guessed < 2;
+        $("bulk").hidden = locked < 2 && guessed < 2;
+      }
     }
+
+    async function post(path, body) {
+      const res = await fetch(`${Pick3Account.API}${path}`, { method: "POST", headers: hdr(!!body),
+        ...(body ? { body: JSON.stringify(body) } : {}) }).catch(() => null);
+      const d = res ? await res.json().catch(() => ({})) : {};
+      return res && res.ok ? d : { ok: false, message: d.message || d.detail || "서버에 연결하지 못했습니다." };
+    }
+    function summary(text) { $("done").hidden = false; $("done").textContent = text; }
+
+    $("openAll").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const input = $("openAll").querySelector("input"), btn = $("openAll").querySelector(".btn");
+      btn.disabled = true; btn.textContent = "여는 중…";
+      const d = await post("/api/docs/open-all", { password: input.value });
+      btn.disabled = false; btn.textContent = "같은 암호로 모두 열기";
+      input.value = ""; input.blur();
+      summary(d.ok ? `${d.opened}건 열었습니다.` + (d.failed ? ` ${d.failed}건은 암호가 맞지 않아 그대로 두었습니다.` : "") : d.message);
+      load();
+    });
+
+    $("saveAll").addEventListener("click", async () => {
+      const btn = $("saveAll");
+      btn.disabled = true; btn.textContent = "저장 중… (문서마다 10~30초)";
+      const d = await post("/api/docs/classify-all");
+      btn.disabled = false; btn.textContent = "추정대로 모두 저장";
+      summary(d.ok ? [`${d.saved}건 저장` + (d.failed ? ` · ${d.failed}건 실패(문서함에 남김)` : ""), ...(d.messages || [])].join("\n\n") : d.message);
+      load();
+    });
 
     $("list").addEventListener("submit", async (e) => {
       e.preventDefault();

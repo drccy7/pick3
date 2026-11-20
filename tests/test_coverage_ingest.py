@@ -90,10 +90,17 @@ def _share(raw: bytes) -> dict:
                        files={"image": ("report.pdf", raw, "application/pdf")}).json()
 
 
+def _as(monkeypatch, box: str, confidence: str = "high") -> None:
+    """The document registry reads every PDF as `box` ("" = unknown)."""
+    import app
+    doc = {"type": box, "box": box, "confidence": confidence if box else "none", "via": "", "also": [], "sections": []}
+    monkeypatch.setattr(app.doc_registry, "classify", lambda raw: dict(doc))
+
+
 def _report(monkeypatch) -> int:
     """Share an unencrypted PDF that reads as a 보장분석 report; returns its id."""
     import app
-    monkeypatch.setattr(app.cov_service, "is_coverage_report", lambda raw: True)
+    _as(monkeypatch, "coverage")
     return _share(_pdf())["report_id"]
 
 
@@ -104,7 +111,7 @@ def _list(kind: str = "coverage") -> list[dict]:
 def test_shared_encrypted_pdf_waits_in_the_locked_box(monkeypatch, store) -> None:
     seen = _fake(monkeypatch, SCREEN)
     res = _share(_pdf("20000101"))
-    assert res["status"] == "saved" and res["kind"] == "locked" and "암호 문서" in res["message"]
+    assert res["status"] == "saved" and res["kind"] == "locked" and "확인할 문서" in res["message"]
     assert seen["gemini"] == [] and store.runs == [] and _list() == []
     r = _list("locked")[0]
     assert r["encrypted"] and r["status"] == "stored"
@@ -118,7 +125,7 @@ def test_open_once_then_classify_as_coverage_and_run(monkeypatch, store) -> None
     rid = _share(_pdf("20000101"))["report_id"]
     bad = client.post(f"/api/docs/{rid}/open", headers=AUTH, json={"password": "0000"}).json()
     assert not bad["ok"] and "맞지" in bad["message"]
-    monkeypatch.setattr(app.cov_service, "is_coverage_report", lambda raw: True)
+    _as(monkeypatch, "coverage")
     ok = client.post(f"/api/docs/{rid}/open", headers=AUTH, json={"password": "20000101"}).json()
     assert ok == {"ok": True, "suggested": "coverage"}
     r = _list("locked")[0]
@@ -158,7 +165,7 @@ def test_classify_as_medical_saves_records_and_drops_the_pdf(monkeypatch, store)
 def test_classify_as_checkup_or_delete(monkeypatch, store) -> None:
     import app
     _fake(monkeypatch, SCREEN)
-    monkeypatch.setattr(app.health_checkup, "is_checkup_pdf", lambda raw: True)
+    _as(monkeypatch, "checkup")
     a = _share(_pdf("pw"))["report_id"]
     b = _share(_pdf("pw"))["report_id"]
     assert client.post(f"/api/docs/{a}/classify", headers=AUTH, json={"kind": "checkup"}).json()["ok"] is False
@@ -175,8 +182,7 @@ def test_classify_as_checkup_or_delete(monkeypatch, store) -> None:
 def test_unencrypted_checkup_goes_to_its_box(monkeypatch, store) -> None:
     import app
     _fake(monkeypatch, SCREEN)
-    monkeypatch.setattr(app.cov_service, "is_coverage_report", lambda raw: False)
-    monkeypatch.setattr(app.health_checkup, "is_checkup_pdf", lambda raw: True)
+    _as(monkeypatch, "checkup")
     res = _share(_pdf())
     assert res["status"] == "saved" and res["kind"] == "checkup" and "건강검진" in res["message"]
     assert len(_list("checkup")) == 1 and _list() == []
@@ -194,7 +200,7 @@ def test_checkup_text_detection() -> None:
 def test_rerun_reuses_the_extract_without_password(monkeypatch, store) -> None:
     import app
     _fake(monkeypatch, SCREEN)
-    monkeypatch.setattr(app.cov_service, "is_coverage_report", lambda raw: True)
+    _as(monkeypatch, "coverage")
     rid = _report(monkeypatch)
     client.post(f"/api/coverage/{rid}/run", headers=AUTH, json={})
     again = client.post(f"/api/coverage/{rid}/run", headers=AUTH, json={}).json()
@@ -205,7 +211,7 @@ def test_rerun_reuses_the_extract_without_password(monkeypatch, store) -> None:
 def test_pdf_is_printed_from_the_result_html_once_and_dropped_on_rerun(monkeypatch, store) -> None:
     import app
     _fake(monkeypatch, SCREEN)
-    monkeypatch.setattr(app.cov_service, "is_coverage_report", lambda raw: True)
+    _as(monkeypatch, "coverage")
     printed = []
     monkeypatch.setattr(app.cov_service, "html_to_pdf", lambda h: printed.append(h) or b"%PDF-" + h.encode())
     rid = _report(monkeypatch)
@@ -250,9 +256,9 @@ def test_pdf_size_limits(monkeypatch, store) -> None:
     import app
     _fake(monkeypatch, SCREEN)
     big = _pdf() + b"%" * (16 * 1024 * 1024)
-    monkeypatch.setattr(app.cov_service, "is_coverage_report", lambda raw: True)
+    _as(monkeypatch, "coverage")
     assert _share(big)["status"] == "saved"  # a 16 MB report is fine (File API)
-    monkeypatch.setattr(app.cov_service, "is_coverage_report", lambda raw: False)
+    _as(monkeypatch, "")
     assert "15MB" in _share(big)["message"]  # a 16 MB medical PDF is not (inline Gemini)
 
 
@@ -380,6 +386,7 @@ def _fake_mhr(monkeypatch, app):
             "visits": [{"visit_date": "2026-03-06"}] * 3, "meds": [{"visit_date": "2026-03-06"}] * 2}
     saved = {}
     monkeypatch.setattr(app.mhr, "is_mhr_pdf", lambda raw: True)
+    _as(monkeypatch, "mhr")
     monkeypatch.setattr(app.mhr, "read", lambda raw: read)
 
     async def visits(rows, uid, patient):
@@ -407,7 +414,6 @@ def test_shared_mhr_export_is_kept_and_read_into_records(monkeypatch, store) -> 
     import app
     from pypdf import PdfReader
     _fake(monkeypatch, SCREEN)
-    monkeypatch.setattr(app.cov_service, "is_coverage_report", lambda raw: False)
     saved = _fake_mhr(monkeypatch, app)
     res = _share(_pdf_pages(4))
     assert res["status"] == "saved" and res["kind"] == "mhr"
@@ -425,7 +431,6 @@ def test_shared_mhr_export_is_kept_and_read_into_records(monkeypatch, store) -> 
 def test_analyze_reruns_the_persons_report_or_writes_a_health_analysis(monkeypatch, store) -> None:
     import app
     _fake(monkeypatch, SCREEN)
-    monkeypatch.setattr(app.cov_service, "is_coverage_report", lambda raw: False)
     _fake_mhr(monkeypatch, app)
     mid = _share(_pdf_pages(4))["report_id"]
     seen = {}
@@ -458,9 +463,100 @@ def test_locked_mhr_is_suggested_and_processed_on_confirm(monkeypatch, store) ->
     import app
     _fake(monkeypatch, SCREEN)
     saved = _fake_mhr(monkeypatch, app)
-    monkeypatch.setattr(app.health_checkup, "is_checkup_pdf", lambda raw: True)  # combined file has checkup words
     rid = _share(_pdf("pw"))["report_id"]
     assert client.post(f"/api/docs/{rid}/open", headers=AUTH, json={"password": "pw"}).json()["suggested"] == "mhr"
     d = client.post(f"/api/docs/{rid}/classify", headers=AUTH, json={"kind": "mhr"}).json()
     assert d["ok"] and "투약 2건" in d["message"] and saved["meds"][0] == 2
     assert _list("locked") == [] and len(_list("mhr")) == 1
+
+
+def _encrypt(raw: bytes, password: str) -> bytes:
+    from pypdf import PdfReader
+    w = PdfWriter()
+    w.append(PdfReader(io.BytesIO(raw)))
+    w.encrypt(password)
+    out = io.BytesIO()
+    w.write(out)
+    return out.getvalue()
+
+
+def test_sharing_and_opening_use_the_same_registry(monkeypatch, store) -> None:
+    import app
+    pytest.importorskip("reportlab")
+    from test_doc_registry import CHECKUP_WORDS, COVERAGE_WORDS, pdf
+    _fake(monkeypatch, SCREEN)
+    routed = []
+
+    async def fake_medical(user, raw, mime, chosen, filename):
+        routed.append(raw)
+        return {"status": "saved", "service": "medical", "message": "ok"}
+    monkeypatch.setattr(app, "_save_medical_document", fake_medical)
+    samples = {"checkup": pdf(CHECKUP_WORDS), "coverage": pdf(COVERAGE_WORDS * 2),
+               "medical": pdf([("건강보험 요양급여내역", 13), "발급기간 2026.01.01~2026.06.30"])}
+    for box, raw in samples.items():
+        assert app._guess_kind(raw) == box
+        res = _share(raw)  # shared as is
+        assert (res.get("kind") or "medical") == box, box
+        rid = _share(_encrypt(raw, "pw"))["report_id"]  # the same file behind a password
+        assert client.post(f"/api/docs/{rid}/open", headers=AUTH, json={"password": "pw"}).json()["suggested"] == box
+    assert len(routed) == 1 and len(_list("checkup")) == 1 and len(_list()) == 1
+
+
+def test_unknown_pdf_without_medical_rows_waits_opened_in_the_box(monkeypatch, store) -> None:
+    seen = _fake(monkeypatch, {"patient": "", "records": []})
+    _as(monkeypatch, "")
+    res = _share(_pdf())
+    assert res["status"] == "saved" and res["kind"] == "locked" and "종류를 골라" in res["message"]
+    assert len(seen["gemini"]) == 2  # payments, then prescriptions: both found nothing
+    (r,) = _list("locked")
+    assert not r["encrypted"] and r["status"] == "opened" and r["suggested"] is None
+    assert client.post(f"/api/docs/{r['id']}/classify", headers=AUTH, json={"kind": "checkup"}).json()["ok"]
+
+
+def test_weak_guess_is_confirmed_by_the_user(monkeypatch, store) -> None:
+    seen = _fake(monkeypatch, SCREEN)
+    _as(monkeypatch, "medical", "low")
+    res = _share(_pdf())
+    assert res["kind"] == "locked" and "확인하고 저장" in res["message"] and seen["gemini"] == []
+    (r,) = _list("locked")
+    assert r["status"] == "opened" and r["suggested"] == "medical"
+
+
+def test_open_all_with_one_password_then_save_all_as_guessed(monkeypatch, store) -> None:
+    import app
+    _fake(monkeypatch, SCREEN)
+    _as(monkeypatch, "checkup")
+    ids = [_share(_pdf(pw))["report_id"] for pw in ("700101", "700101", "other")]
+    assert client.post("/api/docs/open-all", headers=AUTH, json={"password": " "}).json()["ok"] is False
+    assert client.post("/api/docs/open-all", headers=AUTH, json={"password": "0000"}).json() == \
+        {"ok": True, "opened": 0, "failed": 3}  # wrong password: nothing changes
+    assert all(r["encrypted"] for r in _list("locked"))
+    assert client.post("/api/docs/open-all", headers=AUTH, json={"password": "700101"}).json() == \
+        {"ok": True, "opened": 2, "failed": 1}
+    d = client.post("/api/docs/classify-all", headers=AUTH).json()
+    assert d["ok"] and (d["saved"], d["failed"], len(d["messages"])) == (2, 0, 2)
+    assert sorted(r["id"] for r in _list("checkup")) == ids[:2]
+    assert [r["id"] for r in _list("locked")] == [ids[2]]  # still locked: left alone
+
+
+def test_save_all_medical_stops_at_the_daily_limit(monkeypatch, store) -> None:
+    import app
+    _fake(monkeypatch, SCREEN)
+    _as(monkeypatch, "medical")
+    handled = []
+
+    async def fake_medical(user, raw, mime, chosen, filename):
+        handled.append(filename)
+        return {"status": "saved", "service": "medical", "message": "🩺 진료 3건"}
+    monkeypatch.setattr(app, "_save_medical_document", fake_medical)
+    for _ in range(3):
+        _share(_pdf("pw"))
+    assert client.post("/api/docs/open-all", headers=AUTH, json={"password": "pw"}).json()["opened"] == 3
+    monkeypatch.setattr(app, "_daily_limits", lambda user: (0, 300))
+    d = client.post("/api/docs/classify-all", headers=AUTH).json()
+    assert (d["saved"], d["failed"], len(d["messages"])) == (0, 1, 1) and "한도" in d["messages"][0]
+    assert handled == [] and len(_list("locked")) == 3
+    monkeypatch.setattr(app, "_daily_limits", lambda user: (30, 300))
+    d = client.post("/api/docs/classify-all", headers=AUTH).json()
+    assert (d["saved"], d["failed"]) == (3, 0) and len(handled) == 3
+    assert _list("locked") == [] and store.files == {}

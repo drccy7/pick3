@@ -32,8 +32,9 @@ DEFAULT_ANALYZE_MODEL = "gemini-pro-latest"
 _BROWSER = threading.Lock()  # one Chromium at a time on a small server
 
 # Vocabulary every Korean insurance coverage report uses and medical bills / prescriptions don't.
-_REPORT_TERMS = ("보장분석", "보장 분석", "가입담보", "가입금액", "담보명", "보험기간", "납입기간", "계약자",
+REPORT_TERMS = ("보장분석", "보장 분석", "가입담보", "가입금액", "담보명", "보험기간", "납입기간", "계약자",
                  "피보험자", "보험료", "보유계약", "보장내역", "만기")
+_REPORT_TERMS = REPORT_TERMS  # old name
 
 
 def is_coverage_report(raw: bytes, pages: int = 12) -> bool:
@@ -44,7 +45,7 @@ def is_coverage_report(raw: bytes, pages: int = 12) -> bool:
     except Exception:
         return False
     text = re.sub(r"\s+", "", text)
-    hits = {t for t in _REPORT_TERMS if t.replace(" ", "") in text}
+    hits = {t for t in REPORT_TERMS if t.replace(" ", "") in text}
     return len(hits) >= 4
 
 

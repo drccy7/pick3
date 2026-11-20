@@ -62,7 +62,7 @@ def _heading(line: dict):
     return None
 
 
-def _split(pdf) -> list[dict]:
+def split_pdf(pdf) -> list[dict]:
     out: list[dict] = []
     for no, page in enumerate(pdf.pages, 1):
         heads = [(ln["top"], *h) for ln in page.extract_text_lines(return_chars=True) if (h := _heading(ln))]
@@ -81,10 +81,13 @@ def _split(pdf) -> list[dict]:
     return out
 
 
+_split = split_pdf  # old name
+
+
 def split_sections(raw: bytes) -> list[dict]:
     """[{"section", "heading", "pages": [1-based], "start": (page, top), "end": (page, top) | None}]."""
     with pdfplumber.open(io.BytesIO(raw)) as pdf:
-        return _split(pdf)
+        return split_pdf(pdf)
 
 
 def patient_name(raw: bytes) -> str:
@@ -214,7 +217,7 @@ def parse_meds(pdf, sec: dict) -> list[dict]:
 def read(raw: bytes) -> dict:
     """{"patient", "sections": [{section, heading, pages}], "visits": [...], "meds": [...]}."""
     with pdfplumber.open(io.BytesIO(raw)) as pdf:
-        secs = _split(pdf)
+        secs = split_pdf(pdf)
         visits = [v for s in secs if s["section"] == "visits" for v in parse_visits(pdf, s)]
         meds = [m for s in secs if s["section"] == "meds" for m in parse_meds(pdf, s)]
     return {"patient": patient_name(raw), "visits": visits, "meds": meds,

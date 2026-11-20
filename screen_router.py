@@ -39,10 +39,11 @@ def auto_route_enabled() -> bool:
 
 
 async def classify_screen(raw: bytes, mime_type: str) -> str:
-    """Return 'restaurant', 'medical' or 'other'. Any failure -> 'restaurant' (the original behaviour)."""
+    """Return one of KINDS, or 'error' when the screen could not be judged (no key, request failed,
+    unreadable JSON): the caller saves nothing. A readable answer with an unknown type counts as 'other'."""
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     if not api_key:
-        return "restaurant"
+        return "error"
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{gemini_model()}:generateContent"
     payload = {
         "contents": [{"parts": [
@@ -61,7 +62,9 @@ async def classify_screen(raw: bytes, mime_type: str) -> str:
         parsed = json.loads(text)
         if isinstance(parsed, list):
             parsed = parsed[0] if parsed else {}
+        if not isinstance(parsed, dict):
+            return "error"
         kind = str(parsed.get("type") or "").strip().lower()
     except Exception:
-        return "restaurant"
-    return kind if kind in KINDS else "restaurant"
+        return "error"
+    return kind if kind in KINDS else "other"

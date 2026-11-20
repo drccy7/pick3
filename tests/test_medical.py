@@ -286,6 +286,31 @@ def test_pick3_shortcut_still_saves_restaurants(monkeypatch: pytest.MonkeyPatch)
     assert seen["posts"][0][0].endswith("/pick3_saved_places")
 
 
+def test_router_failure_saves_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+    import screen_router
+    monkeypatch.delenv("PICK3_AUTO_ROUTE", raising=False)
+    monkeypatch.delenv("KAKAO_REST_API_KEY", raising=False)
+    seen = _fake(monkeypatch, ["not an object", {"name": "몽탄", "area": "성수"}],
+                 insert_returns=lambda body: [{**body, "id": 1}])
+    res = client.post("/api/ingest/screenshot", files={"image": ("s.jpg", b"\xff\xd8\xff" + b"0" * 20, "image/jpeg")},
+                      headers=AUTH).json()
+    assert res["status"] == "error" and res["message"] == "❌ 화면 종류를 판단하지 못했습니다. 잠시 후 다시 시도해 주세요."
+    assert len(seen["gemini"]) == 1 and not any("pick3_saved_places" in u for u, _ in seen["posts"])
+    monkeypatch.delenv("GEMINI_API_KEY")
+    assert asyncio.run(screen_router.classify_screen(PNG, "image/png")) == "error"
+
+
+def test_router_other_still_tries_a_restaurant(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PICK3_AUTO_ROUTE", raising=False)
+    monkeypatch.delenv("KAKAO_REST_API_KEY", raising=False)
+    seen = _fake(monkeypatch, [{"type": "something"}, {"name": "몽탄", "area": "성수"}],
+                 insert_returns=lambda body: [{**body, "id": 1}])
+    res = client.post("/api/ingest/screenshot", files={"image": ("s.jpg", b"\xff\xd8\xff" + b"0" * 20, "image/jpeg")},
+                      headers=AUTH).json()
+    assert res["service"] == "restaurant" and res["status"] == "saved" and len(seen["gemini"]) == 2
+
+
 def test_auto_route_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PICK3_AUTO_ROUTE", "0")
     monkeypatch.delenv("KAKAO_REST_API_KEY", raising=False)

@@ -48,7 +48,7 @@ from pydantic import BaseModel, field_validator
 try:
     from .providers import ProviderType, SituationType, get_kakao_diag, get_recommendations
     from .reels_script import build_reels_script
-    from . import auth_pin, health_checkup, link_render, medical, mhr, nhis_claims, prescriptions, screen_router
+    from . import auth_pin, doc_registry, link_render, medical, mhr, nhis_claims, prescriptions, screen_router
     from .coverage_review import pdf_io as cov_pdf, service as cov_service, store as cov_store
     from .coverage_review import health as cov_health
     from .coverage_review import gemini as cov_gemini
@@ -71,7 +71,7 @@ except ImportError:
     from providers import ProviderType, SituationType, get_kakao_diag, get_recommendations
     from reels_script import build_reels_script
     import auth_pin
-    import health_checkup
+    import doc_registry
     import link_render
     import nhis_claims
     from coverage_review import pdf_io as cov_pdf, service as cov_service, store as cov_store
@@ -360,24 +360,33 @@ async def ingest_screenshot(
     if mime == "application/pdf":
         if cov_pdf.is_encrypted(raw):  # unreadable until opened: 암호 문서함, the user opens and classifies it
             return await _store_doc(user, raw, image.filename, "locked", encrypted=True)
-        if cov_service.is_coverage_report(raw):  # 보장분석: store only, the user starts it on Pick3
-            return await _store_doc(user, raw, image.filename, "coverage")
-        if mhr.is_mhr_pdf(raw):  # 나의건강기록 (검진·진료·투약, any mix): keep the file, read its parts
+        doc = await asyncio.to_thread(doc_registry.classify, raw)  # same order as _guess_kind after opening
+        box, sure = doc["box"], doc["confidence"] in ("high", "medium")
+        if box == "mhr":  # 나의건강기록 (검진·진료·투약, any mix): keep the file, read its parts
             res = await _store_doc(user, raw, image.filename, "mhr")
             if res["status"] == "saved":
                 res["message"] = (await _process_mhr(user, res["report_id"], raw))["message"]
             return res
-        if health_checkup.is_checkup_pdf(raw):  # 건강검진: store only (analysis comes later)
-            return await _store_doc(user, raw, image.filename, "checkup")
+        if box in ("coverage", "checkup"):  # store only, whatever the confidence: the user starts it on Pick3
+            return await _store_doc(user, raw, image.filename, box)
+        if doc["type"] and not (box == "medical" and sure):  # a weak guess: the user confirms in the 🔒 box
+            return await _store_opened(user, raw, image.filename, box, "unsure")
         if len(raw) > medical.MAX_UPLOAD_BYTES:  # medical PDFs are sent inline to Gemini
             return {"status": "error", "message": "❌ 의료비·처방 PDF가 너무 큽니다(15MB 초과). 쪽을 나눠 보내 주세요."}
-        # Other PDFs are medical documents (처방조제정보, 진료비 영수증); no restaurant arrives as a PDF.
+        # 요양급여내역·처방조제정보, or an unknown PDF read by Gemini (진료비 영수증); no restaurant arrives as a PDF.
         result = await _save_medical_document(user, raw, mime, "", image.filename)
+        if result.get("status") == "not_found":  # nothing found: keep it, the user picks (or confirms) the kind
+            kept = await _store_opened(user, raw, image.filename, doc["box"] if doc["type"] else "", "unknown")
+            if kept["status"] == "saved":
+                return kept
         if result["service"] == "medical":
             result["message"] = "🧾 의료비 기록\n" + result["message"]
         return result
     if screen_router.auto_route_enabled():
         kind = await screen_router.classify_screen(raw, mime)
+        if kind == "error":
+            return {"status": "error", "service": "none",
+                    "message": "❌ 화면 종류를 판단하지 못했습니다. 잠시 후 다시 시도해 주세요."}
         if kind == "medical":
             result = await _save_medical(user, raw, mime)
             result["service"] = "medical"
@@ -439,7 +448,7 @@ def _cov_progress(rid: int, p: dict) -> None:
 
 
 _DOC_SAVED = {
-    "locked": ["🔒 암호가 걸린 PDF를 받았습니다.", "Pick3 홈 → 🔒 암호 문서에서 암호를 넣고 종류를 골라 주세요."],
+    "locked": ["🔒 암호가 걸린 PDF를 받았습니다.", "Pick3 홈 → 🔒 확인할 문서에서 암호를 넣고 종류를 골라 주세요."],
     "coverage": ["📋 보장분석 보고서를 저장했습니다.", "제안서는 Pick3 → 📋 보장분석에서 [제안서 작성]을 눌러 시작하세요."],
     "checkup": ["🩺 건강검진 결과를 저장했습니다.", "Pick3 → 🩺 건강검진에서 볼 수 있습니다."],
     "mhr": ["📱 나의건강기록을 저장했습니다."],
@@ -457,6 +466,26 @@ async def _store_doc(user: dict, raw: bytes, filename: str | None, kind: str, en
         return {"status": "error", "service": "document", "message": "❌ 문서를 저장하지 못했습니다.", "detail": str(exc)}
     return {"status": "saved", "service": "coverage" if kind == "coverage" else "document", "kind": kind,
             "report_id": row["id"], "message": "\n".join(_DOC_SAVED[kind])}
+
+
+_DOC_KEPT = {
+    "unsure": ["📥 문서 종류를 확실히 알 수 없어 문서함에 보관했습니다.",
+               "Pick3 홈 → 🔒 확인할 문서에서 종류를 확인하고 저장해 주세요."],
+    "unknown": ["📥 의료비 내용을 찾지 못해 문서함에 보관했습니다.",
+                "Pick3 홈 → 🔒 확인할 문서에서 종류를 골라 주세요."],
+}
+
+
+async def _store_opened(user: dict, raw: bytes, filename: str | None, suggested: str, why: str) -> dict:
+    """An unencrypted PDF Pick3 could not settle: the 🔒 box, already opened, with Pick3's guess if any."""
+    res = await _store_doc(user, raw, filename, "locked")
+    if res["status"] != "saved":
+        return res
+    try:
+        await cov_store.update(user["id"], res["report_id"], status="opened", suggested=suggested or None)
+    except cov_store.StoreError:
+        pass  # still listed in the box; the user picks the kind without a guess
+    return {**res, "message": "\n".join(_DOC_KEPT[why])}
 
 
 def _store_failed(exc: Exception) -> HTTPException:
@@ -586,17 +615,8 @@ class DocClassify(BaseModel):
 
 
 def _guess_kind(raw: bytes) -> str:
-    """mhr | coverage | medical (요양급여내역·처방조제·영수증 form) | checkup | "" (the user picks).
-    나의건강기록 first: a combined export also contains checkup words."""
-    if mhr.is_mhr_pdf(raw):
-        return "mhr"
-    if cov_service.is_coverage_report(raw):
-        return "coverage"
-    if nhis_claims.is_nhis_pdf(raw) or prescriptions.is_prescription_pdf(raw):
-        return "medical"
-    if health_checkup.is_checkup_pdf(raw):
-        return "checkup"
-    return ""
+    """mhr | coverage | medical | checkup | "" (the user picks): the registry, as on sharing."""
+    return doc_registry.classify(raw)["box"]
 
 
 async def _locked_row(user: dict, doc_id: int) -> dict:
@@ -611,63 +631,110 @@ async def doc_open(doc_id: int, body: DocOpen, x_pick3_token: Optional[str] = He
     """Decrypt once and keep the opened copy (the password itself is never stored); returns Pick3's guess."""
     user = await _current_user(x_pick3_token)
     try:
-        row = await _locked_row(user, doc_id)
-        if not row["encrypted"]:
-            return {"ok": True, "suggested": row.get("suggested") or ""}
-        if not body.password.strip():
-            return {"ok": False, "message": "암호를 넣어 주세요."}
-        raw = await cov_store.get_file(row["storage_path"])
-        try:
-            raw = cov_pdf.decrypt(raw, body.password.strip())
-        except cov_pdf.PdfPasswordError:
-            return {"ok": False, "message": "암호가 맞지 않습니다."}
-        guess = await asyncio.to_thread(_guess_kind, raw)
-        await cov_store.put_file(row["storage_path"], raw)
-        await cov_store.update(user["id"], doc_id, encrypted=False, status="opened", suggested=guess or None)
+        return await _open_one(user, await _locked_row(user, doc_id), body.password)
     except cov_store.StoreError as exc:
         raise _store_failed(exc)
+
+
+async def _open_one(user: dict, row: dict, password: str) -> dict:
+    if not row["encrypted"]:
+        return {"ok": True, "suggested": row.get("suggested") or ""}
+    if not password.strip():
+        return {"ok": False, "message": "암호를 넣어 주세요."}
+    raw = await cov_store.get_file(row["storage_path"])
+    try:
+        raw = cov_pdf.decrypt(raw, password.strip())
+    except cov_pdf.PdfPasswordError:
+        return {"ok": False, "message": "암호가 맞지 않습니다."}
+    guess = await asyncio.to_thread(_guess_kind, raw)
+    await cov_store.put_file(row["storage_path"], raw)
+    await cov_store.update(user["id"], row["id"], encrypted=False, status="opened", suggested=guess or None)
     return {"ok": True, "suggested": guess}
+
+
+@app.post("/api/docs/open-all")
+async def doc_open_all(body: DocOpen, x_pick3_token: Optional[str] = Header(default=None)) -> dict:
+    """One password for every encrypted PDF in the box (e.g. 요양급여내역 by year); wrong ones stay locked."""
+    user = await _current_user(x_pick3_token)
+    if not body.password.strip():
+        return {"ok": False, "opened": 0, "failed": 0, "message": "암호를 넣어 주세요."}
+    opened = failed = 0
+    try:
+        for row in await cov_store.list_reports(user["id"], "locked"):
+            if row.get("encrypted"):
+                ok = (await _open_one(user, row, body.password))["ok"]
+                opened, failed = opened + ok, failed + (not ok)
+    except cov_store.StoreError as exc:
+        raise _store_failed(exc)
+    return {"ok": True, "opened": opened, "failed": failed}
 
 
 @app.post("/api/docs/{doc_id}/classify")
 async def doc_classify(doc_id: int, body: DocClassify, x_pick3_token: Optional[str] = Header(default=None)) -> dict:
     """coverage / checkup: move to that box. medical: save as 의료비·처방 records, then drop the PDF. delete."""
     user = await _current_user(x_pick3_token)
-    kind = body.kind
     try:
-        row = await _locked_row(user, doc_id)
-        if row["encrypted"]:
-            return {"ok": False, "message": "먼저 암호를 넣어 열어 주세요."}
-        paths = [row["storage_path"]]
-        if kind == "delete":
-            await cov_store.delete_files(paths)
-            await cov_store.delete(user["id"], doc_id)
-            return {"ok": True, "message": "지웠습니다."}
-        if kind in ("coverage", "checkup"):
-            await cov_store.update(user["id"], doc_id, kind=kind, status="stored", message=None)
-            return {"ok": True, "message": "\n".join(_DOC_SAVED[kind])}
-        if kind == "mhr":
-            raw = await cov_store.get_file(row["storage_path"])
-            if not mhr.is_mhr_pdf(raw):
-                return {"ok": False, "message": "나의건강기록 문서가 아닙니다. 다른 종류를 골라 주세요."}
-            await cov_store.update(user["id"], doc_id, kind="mhr")
-            return await _process_mhr(user, doc_id, raw)
-        if kind != "medical":
-            raise HTTPException(status_code=400, detail="종류를 골라 주세요.")
-        raw = await cov_store.get_file(row["storage_path"])
-        if len(raw) > medical.MAX_UPLOAD_BYTES:
-            return {"ok": False, "message": "❌ 의료비·처방 PDF가 너무 큽니다(15MB 초과)."}
-        usage = await bump_usage(user["id"])
-        if usage["user_count"] > _daily_limits(user)[0]:
-            return {"ok": False, "message": "오늘 저장 한도를 넘었습니다. 내일 다시 시도해 주세요."}
-        result = await _save_medical_document(user, raw, "application/pdf", "", row.get("filename"))
-        if result.get("status") != "saved":  # stays in the box: the user can pick another kind
-            return {"ok": False, "message": result.get("message") or "의료비·처방으로 읽지 못했습니다."}
-        await cov_store.delete_files(paths)  # the records keep what is needed; don't keep the health-data PDF
-        await cov_store.delete(user["id"], doc_id)
-        return {"ok": True, "message": result.get("message", "")}
+        return await _classify_one(user, await _locked_row(user, doc_id), body.kind)
     except cov_store.StoreError as exc:
         raise _store_failed(exc)
+
+
+async def _classify_one(user: dict, row: dict, kind: str) -> dict:
+    doc_id = row["id"]
+    if row["encrypted"]:
+        return {"ok": False, "message": "먼저 암호를 넣어 열어 주세요."}
+    paths = [row["storage_path"]]
+    if kind == "delete":
+        await cov_store.delete_files(paths)
+        await cov_store.delete(user["id"], doc_id)
+        return {"ok": True, "message": "지웠습니다."}
+    if kind in ("coverage", "checkup"):
+        await cov_store.update(user["id"], doc_id, kind=kind, status="stored", message=None)
+        return {"ok": True, "message": "\n".join(_DOC_SAVED[kind])}
+    if kind == "mhr":
+        raw = await cov_store.get_file(row["storage_path"])
+        if not mhr.is_mhr_pdf(raw):
+            return {"ok": False, "message": "나의건강기록 문서가 아닙니다. 다른 종류를 골라 주세요."}
+        await cov_store.update(user["id"], doc_id, kind="mhr")
+        return await _process_mhr(user, doc_id, raw)
+    if kind != "medical":
+        raise HTTPException(status_code=400, detail="종류를 골라 주세요.")
+    raw = await cov_store.get_file(row["storage_path"])
+    if len(raw) > medical.MAX_UPLOAD_BYTES:
+        return {"ok": False, "message": "❌ 의료비·처방 PDF가 너무 큽니다(15MB 초과)."}
+    usage = await bump_usage(user["id"])
+    if usage["user_count"] > _daily_limits(user)[0]:
+        return {"ok": False, "limited": True, "message": "오늘 저장 한도를 넘었습니다. 내일 다시 시도해 주세요."}
+    result = await _save_medical_document(user, raw, "application/pdf", "", row.get("filename"))
+    if result.get("status") != "saved":  # stays in the box: the user can pick another kind
+        return {"ok": False, "message": result.get("message") or "의료비·처방으로 읽지 못했습니다."}
+    await cov_store.delete_files(paths)  # the records keep what is needed; don't keep the health-data PDF
+    await cov_store.delete(user["id"], doc_id)
+    return {"ok": True, "message": result.get("message", "")}
+
+
+@app.post("/api/docs/classify-all")
+async def doc_classify_all(x_pick3_token: Optional[str] = Header(default=None)) -> dict:
+    """Save every opened PDF as Pick3 guessed; stops at the daily limit. Unguessed ones wait for the user."""
+    user = await _current_user(x_pick3_token)
+    saved = failed = 0
+    messages: list[str] = []
+    try:
+        for row in await cov_store.list_reports(user["id"], "locked"):
+            kind = row.get("suggested") or ""
+            if row.get("encrypted") or kind not in ("mhr", "coverage", "checkup", "medical"):
+                continue
+            try:
+                res = await _classify_one(user, row, kind)
+            except StorageError as exc:  # usage counter: stop, the rest wait in the box
+                res = {"ok": False, "limited": True, "message": f"❌ 저장소 연결 문제: {exc}"}
+            saved, failed = saved + bool(res["ok"]), failed + (not res["ok"])
+            messages.append(f"{row.get('filename') or '문서'}: {res.get('message') or ''}".strip())
+            if res.get("limited"):
+                break
+    except cov_store.StoreError as exc:
+        raise _store_failed(exc)
+    return {"ok": True, "saved": saved, "failed": failed, "messages": messages}
 
 
 async def _process_mhr(user: dict, doc_id: int, raw: bytes) -> dict:
@@ -1257,7 +1324,8 @@ async def _save_medical_document(user: dict, raw: bytes, mime: str, chosen: str,
         result["service"] = "prescription"
         return result
     if mime != "application/pdf" and screen_router.auto_route_enabled():
-        # An image here may be a prescription screen (e.g. a PDF viewer captured instead of the file).
+        # An image here may be a prescription screen (e.g. a PDF viewer captured instead of the file);
+        # "error" (could not judge) reads it as payments, like any other answer.
         if await screen_router.classify_screen(raw, mime) == "prescription":
             result = await _save_prescriptions(user, raw, mime, chosen, filename=filename)
             result["service"] = "prescription"

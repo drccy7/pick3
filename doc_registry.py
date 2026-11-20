@@ -21,13 +21,13 @@ import pdfplumber
 
 try:
     from . import health_checkup, mhr, nhis_claims, prescriptions
-    from .coverage_review.service import _REPORT_TERMS
+    from .coverage_review.service import REPORT_TERMS
 except ImportError:
     import health_checkup
     import mhr
     import nhis_claims
     import prescriptions
-    from coverage_review.service import _REPORT_TERMS
+    from coverage_review.service import REPORT_TERMS
 
 HEAD_LINES = 5  # a title sits in the first lines of page 1 ...
 TITLE_SIZE = mhr.MIN_HEADING_SIZE  # ... or is printed larger than table text
@@ -69,11 +69,11 @@ def _facts(pdf) -> Facts:
 
 def _coverage_words(f: Facts) -> bool:
     t = f.text(COVERAGE_PAGES)
-    return len({w for w in _REPORT_TERMS if _squash(w) in t}) >= COVERAGE_TERMS
+    return len({w for w in REPORT_TERMS if _squash(w) in t}) >= COVERAGE_TERMS
 
 
 def _mhr_sections(pdf) -> list[dict]:
-    return [{"section": s["section"], "heading": s["heading"], "pages": s["pages"]} for s in mhr._split(pdf)]
+    return [{"section": s["section"], "heading": s["heading"], "pages": s["pages"]} for s in mhr.split_pdf(pdf)]
 
 
 @dataclass(frozen=True)
