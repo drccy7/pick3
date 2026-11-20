@@ -232,7 +232,8 @@ def analysis_pdf(facts: dict, analysis: dict, plan: dict, warnings: list[str]) -
         out.append(box([P("<b>자동 점검</b>", s.small)] + ws, W, WARN_BG, WARN_LINE))
 
     # 1. 보유 계약
-    h2(f"1. 보유 계약 ({len(f['contracts'])}건, 월납 합계 {won(p['base'])}원)")
+    h2(f"1. 보유 계약 ({len(f['contracts'])}건, 월납 합계 {won(p['base'])}원"
+       + (f", 실제 납입 {won(p['paying_now'])}원" if p["paid_up"] else "") + ")")
     rows = [[P("No", s.th), P("보험사 · 상품", s.th), P("기간", s.th), P("1회 보험료", s.thn), P("주요 담보", s.th)]]
     for k in f["contracts"]:
         period = f"{e(k.get('start') or '')}~{e(k.get('end') or '종신')}"
@@ -382,8 +383,10 @@ def analysis_pdf(facts: dict, analysis: dict, plan: dict, warnings: list[str]) -
         lis.append(para)
     out.append(box(lis, W, WARN_BG, WARN_LINE))
     h2("7. 분석의 한계")
-    out.append(P("병의원 기록에는 기관·날짜·금액만 있고 진단명과 급여·비급여 구분이 없어 청구 가능 여부와 금액은 진료 흐름에 근거한 "
-                 "추정이다. 보고서는 현재 유지 계약만 보여 주므로 과거 계약은 알 수 없다. 보험금 지급 여부는 약관·증권으로 최종 "
+    first = ("진단명은 건강보험 요양급여내역에서 왔고 의증·배제상병이 포함될 수 있으며, 급여분만 있어 비급여는 빠져 있다. "
+             "청구 가능 여부와 금액은 추정이다. " if f.get("diagnoses") else
+             "병의원 기록에는 기관·날짜·금액만 있고 진단명과 급여·비급여 구분이 없어 청구 가능 여부와 금액은 진료 흐름에 근거한 추정이다. ")
+    out.append(P(first + "보고서는 현재 유지 계약만 보여 주므로 과거 계약은 알 수 없다. 보험금 지급 여부는 약관·증권으로 최종 "
                  "확인해야 하며 본 문서는 상담 참고용이다. 위험도는 통계 예측이며 의학적 진단이 아니다. 분석·문장 일부는 "
                  "AI(Gemini)가 작성했고 숫자는 코드로 계산했다.", s.small))
 
