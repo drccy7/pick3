@@ -194,6 +194,59 @@ def test_extract_reports_contracts_read_while_streaming(monkeypatch) -> None:
         return {"ok": True}
 
     monkeypatch.setattr(gemini, "generate_json_stream", fake_stream)
-    assert service.extract(b"%PDF", progress=seen.append) == {"ok": True}
+    monkeypatch.setenv("COVERAGE_EXTRACT_MODE", "single")
+    assert service.extract(b"%PDF", progress=seen.append) == {"ok": True, "_read": {"mode": "single"}}
     counts = [(p.get("done"), p.get("total")) for p in seen if p.get("done") is not None]
     assert counts == [(1, 2), (2, 2)] and seen[0]["label"] == "보고서 올리는 중"
+
+
+
+def _parallel_fakes(monkeypatch, drop_contract=None):
+    """Overview returns 6 contracts (count streamed first); range calls return coverages per contract."""
+    from coverage_review import gemini, prompts
+    calls = []
+    monkeypatch.setattr(gemini, "upload_pdf", lambda raw: {"uri": "u", "name": "n"})
+    monkeypatch.setattr(gemini, "delete_file", lambda name: None)
+
+    def fake_stream(model, parts, schema, on_text, temperature=0.0, feature="", thinking=None):
+        prompt = parts[0]["text"]
+        calls.append(prompt[:20])
+        if prompt == prompts.OVERVIEW_PROMPT:
+            on_text('{"report": {"issuer": "x", "stated_contract_count": 6}')
+            return {"report": {"issuer": "x", "stated_contract_count": 6}, "customer": {"name": "홍길동"},
+                    "contracts": [{"no": i, "insurer": f"보험{i}"} for i in range(1, 7)], "summary": [], "risks": []}
+        import re
+        first, last = map(int, re.search(r"(\d+)번부터 (\d+)번까지", prompt).groups())
+        return {"contracts": [{"no": i, "insurer": f"보험{i}", "coverages": [{"name": f"담보{i}", "unit": "만원",
+                                                                              "amount": i, "category": "기타"}]}
+                              for i in range(first, last + 1) if i != drop_contract]}
+    monkeypatch.setattr(gemini, "generate_json_stream", fake_stream)
+    return calls
+
+
+def test_parallel_read_merges_ranges_by_contract_number(monkeypatch) -> None:
+    from coverage_review import service
+    monkeypatch.delenv("COVERAGE_EXTRACT_MODE", raising=False)
+    calls = _parallel_fakes(monkeypatch)
+    seen = []
+    rep = service.extract(b"%PDF", progress=seen.append)
+    assert rep["_read"] == {"mode": "parallel", "calls": 3}  # overview + contracts 1-4 and 5-6
+    assert [c["coverages"][0]["name"] for c in rep["contracts"]] == [f"담보{i}" for i in range(1, 7)]
+    assert max(p.get("done") or 0 for p in seen) == 6 and len(calls) == 3
+
+
+def test_parallel_read_falls_back_when_a_contract_is_missing(monkeypatch) -> None:
+    from coverage_review import gemini, service
+    monkeypatch.delenv("COVERAGE_EXTRACT_MODE", raising=False)
+    calls = _parallel_fakes(monkeypatch, drop_contract=5)
+    whole = {"report": {}, "contracts": [{"no": 1, "coverages": []}]}
+    orig = gemini.generate_json_stream
+
+    def stream(model, parts, schema, on_text, temperature=0.0, feature="", thinking=None):
+        if parts[0]["text"].startswith(service.prompts.EXTRACT_PROMPT[:30]) and parts[0]["text"] == service.prompts.EXTRACT_PROMPT:
+            return dict(whole)
+        return orig(model, parts, schema, on_text, temperature, feature, thinking)
+    monkeypatch.setattr(gemini, "generate_json_stream", stream)
+    seen = []
+    rep = service.extract(b"%PDF", progress=seen.append)
+    assert rep["_read"] == {"mode": "single"} and any("다시 읽는" in p["label"] for p in seen)

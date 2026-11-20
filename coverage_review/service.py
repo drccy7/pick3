@@ -57,33 +57,124 @@ def fetch_records(patient: str, user_id: int | None) -> list[dict]:
 Progress = Callable[[dict], None]  # {"stage": 1-4, "label": str, "done": int|None, "total": int|None}
 
 
-def _extract_once(pdf_raw: bytes, model: str, progress: Progress, label: str) -> dict:
-    """Streamed so the caller sees real progress: contracts read so far / contracts the report says it has."""
-    progress({"stage": 1, "label": "보고서 올리는 중"})
-    up = gemini.upload_pdf(pdf_raw)
-    progress({"stage": 1, "label": label})
+_COUNT = re.compile(r'"stated_contract_count"\s*:\s*(\d+)')
+CHUNK = 4  # contracts per coverage call
+
+
+def _thinking() -> str:
+    # Copying tables needs no deep reasoning; minimal thinking removes ~45 s of silence before output.
+    return os.getenv("COVERAGE_EXTRACT_THINKING", "minimal")
+
+
+def _extract_once(uri: str, model: str, progress: Progress, label: str) -> dict:
+    """One call for the whole report (the fallback). Streams contracts read / the report's own count."""
     seen = {"done": -1, "total": None}
 
     def on_text(t: str) -> None:
-        m = re.search(r'"stated_contract_count"\s*:\s*(\d+)', t)
+        m = _COUNT.search(t)
         total = int(m.group(1)) if m else None
         done = t.count('"insurer"')  # one per contract object (the key exists only there)
         if (done, total) != (seen["done"], seen["total"]):
             seen.update(done=done, total=total)
             progress({"stage": 1, "label": label, "done": done, "total": total})
+    progress({"stage": 1, "label": label})
+    return gemini.generate_json_stream(model, [{"text": prompts.EXTRACT_PROMPT}, gemini.pdf_part(uri)],
+                                       prompts.EXTRACT_SCHEMA, on_text, feature="coverage_extract",
+                                       thinking=_thinking())
+
+
+def _extract_parallel(uri: str, model: str, progress: Progress) -> dict | None:
+    """Overview (customer, summary, risks, contract list) and coverages for contracts 1-4, 5-8, ... run at
+    the same time: the coverage calls start as soon as the overview stream shows the report's contract
+    count. Returns None when the parts don't add up (caller then reads the report in one call)."""
+    import concurrent.futures as cf
+    lock = threading.Lock()
+    state = {"total": None, "started": False, "done": {}}
+    pool = cf.ThreadPoolExecutor(max_workers=8)
+    chunk_futures: list[cf.Future] = []
+
+    def report() -> None:
+        with lock:
+            done = sum(state["done"].values())
+            total = state["total"]
+        progress({"stage": 1, "label": "보고서 나눠 읽는 중", "done": min(done, total or done), "total": total})
+
+    def chunk(first: int, last: int) -> dict:
+        key = (first, last)
+
+        def on_text(t: str) -> None:
+            n = max(0, t.count('"coverages"') - 1)  # a contract counts once the next one has started
+            with lock:
+                changed = n > state["done"].get(key, 0)
+                if changed:
+                    state["done"][key] = n
+            if changed:
+                report()
+        res = gemini.generate_json_stream(model, [{"text": prompts.chunk_prompt(first, last)}, gemini.pdf_part(uri)],
+                                          prompts.chunk_schema(), on_text, feature="coverage_extract",
+                                          thinking=_thinking())
+        with lock:
+            state["done"][key] = len(res.get("contracts") or [])
+        report()
+        return res
+
+    def start_chunks(total: int) -> None:
+        with lock:
+            if state["started"]:
+                return
+            state["started"], state["total"] = True, total
+        for first in range(1, total + 1, CHUNK):
+            chunk_futures.append(pool.submit(chunk, first, min(first + CHUNK - 1, total)))
+        report()
+
+    def on_overview(t: str) -> None:
+        m = _COUNT.search(t)
+        if m and int(m.group(1)) > 0:
+            start_chunks(int(m.group(1)))
+
+    progress({"stage": 1, "label": "보고서 나눠 읽는 중"})
     try:
-        return gemini.generate_json_stream(model, [{"text": prompts.EXTRACT_PROMPT}, gemini.pdf_part(up["uri"])],
-                                           prompts.EXTRACT_SCHEMA, on_text, feature="coverage_extract",
-                                           thinking=os.getenv("COVERAGE_EXTRACT_THINKING", "minimal"))
+        over = pool.submit(gemini.generate_json_stream, model,
+                           [{"text": prompts.OVERVIEW_PROMPT}, gemini.pdf_part(uri)], prompts.overview_schema(),
+                           on_overview, 0.0, "coverage_extract", _thinking()).result()
+        contracts = over.get("contracts") or []
+        if not contracts:
+            return None
+        start_chunks(len(contracts))  # the report had no stated count: start now
+        covs: dict[int, list] = {}
+        for f in chunk_futures:
+            for c in f.result().get("contracts") or []:
+                covs.setdefault(int(c.get("no", 0)), c.get("coverages") or [])
+    except Exception:
+        return None
     finally:
-        gemini.delete_file(up["name"])
+        pool.shutdown(wait=False, cancel_futures=True)
+    nos = [int(c.get("no", 0)) for c in contracts]
+    stated = (over.get("report") or {}).get("stated_contract_count")
+    if (stated and stated != len(contracts)) or len(set(nos)) != len(nos) or any(n not in covs for n in nos):
+        return None  # numbering disagreed between calls or a range came back short
+    for c in contracts:
+        c["coverages"] = covs[int(c["no"])]
+    over["_read"] = {"mode": "parallel", "calls": 1 + len(chunk_futures)}
+    return over
 
 
 def extract(pdf_raw: bytes, model: str | None = None, progress: Progress = lambda p: None) -> dict:
-    """Copying tables needs no deep reasoning: thinking is minimal (COVERAGE_EXTRACT_THINKING), which
-    removes ~50 s of silent 'thinking' before the first contract appears."""
+    """Upload once; read in parallel (COVERAGE_EXTRACT_MODE=parallel, default) and fall back to one call."""
     model = model or os.getenv("COVERAGE_EXTRACT_MODEL", DEFAULT_EXTRACT_MODEL)
-    return _extract_once(pdf_raw, model, progress, "보고서 읽는 중")
+    progress({"stage": 1, "label": "보고서 올리는 중"})
+    up = gemini.upload_pdf(pdf_raw)
+    try:
+        if os.getenv("COVERAGE_EXTRACT_MODE", "parallel") == "parallel":
+            rep = _extract_parallel(up["uri"], model, progress)
+            if rep is not None:
+                return rep
+            progress({"stage": 1, "label": "나눠 읽은 결과가 맞지 않아 한 번에 다시 읽는 중"})
+        rep = _extract_once(up["uri"], model, progress, "보고서 읽는 중")
+        rep["_read"] = {"mode": "single"}
+        return rep
+    finally:
+        gemini.delete_file(up["name"])
 
 
 def analyze(facts: dict, model: str | None = None) -> dict:

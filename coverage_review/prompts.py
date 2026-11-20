@@ -155,3 +155,48 @@ ANALYZE_PROMPT = """당신은 보험 설계사를 돕는 분석가입니다. 아
 문체: 설계사용 항목은 간결한 메모체, 고객용(customer_text, strengths)은 존댓말. 진단명을 단정하지 말고
 '~로 보임', '확인 필요'로 쓰세요. 위험도는 통계 예측이지 진단이 아닙니다.
 """
+
+
+# ---- parallel read: one overview call + coverage calls per contract range (run concurrently) -----------
+import copy as _copy
+
+_CONTRACT = EXTRACT_SCHEMA["properties"]["contracts"]["items"]
+
+
+def overview_schema() -> dict:
+    """EXTRACT_SCHEMA without each contract's coverages (they come from the range calls)."""
+    s = _copy.deepcopy(EXTRACT_SCHEMA)
+    item = s["properties"]["contracts"]["items"]
+    item["properties"].pop("coverages")
+    item["required"] = [r for r in item["required"] if r != "coverages"]
+    return s
+
+
+def chunk_schema() -> dict:
+    return {"type": "OBJECT", "properties": {"contracts": {"type": "ARRAY", "items": {
+        "type": "OBJECT", "properties": {
+            "no": _CONTRACT["properties"]["no"], "insurer": _CONTRACT["properties"]["insurer"],
+            "coverages": _CONTRACT["properties"]["coverages"]},
+        "required": ["no", "insurer", "coverages"],
+        "propertyOrdering": ["no", "insurer", "coverages"]}}}, "required": ["contracts"]}
+
+
+OVERVIEW_PROMPT = EXTRACT_PROMPT + """
+이번 요청에서는 계약별 담보(coverages)는 적지 마세요(다른 요청에서 따로 읽습니다).
+계약 no는 보고서 보유계약 목록의 번호(없으면 목록 순서, 1부터)로 적으세요.
+"""
+
+
+def chunk_prompt(first: int, last: int) -> str:
+    return f"""첨부한 PDF는 한 고객의 보험 보장분석 보고서입니다.
+보유계약 목록의 번호(없으면 목록 순서, 1부터) 기준 {first}번부터 {last}번까지의 계약만 골라,
+각 계약의 담보(특약) 전부를 계약별 상세 페이지에서 옮기세요. 그 범위에 없는 번호는 넣지 마세요.
+
+규칙
+- no는 목록 번호, insurer는 보험사 이름(대조용).
+- 담보명과 가입금액을 한 행씩. 표가 2단(좌우)이면 담보명과 금액의 짝을 같은 칸끼리 맞추세요.
+- 금액은 표에 적힌 숫자 그대로, unit에 단위(표 머리에 '단위: 만원'이면 만원). 환산하지 마세요.
+- category는 목록 중 가장 가까운 것 하나(실손형 의료비는 실손입원/실손통원/실손처방, 1~5종·종수술은 질병종수술/상해종수술,
+  관절·척추·5대기관 등 특정 부위 수술은 특정질병수술, 표적항암·방사선·중입자·양성자·CAR-T 등은 암치료비, 없으면 기타).
+- 상세 페이지에 담보가 없는 계약은 coverages를 빈 배열로.
+"""
