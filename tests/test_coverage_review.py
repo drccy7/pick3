@@ -257,3 +257,18 @@ def test_diagnoses_from_nhis_rows_feed_facts_and_documents() -> None:
 def test_no_diagnoses_without_nhis_data() -> None:
     f = F.build(REPORT, RECORDS, TODAY)
     assert f["diagnoses"] == [] and f["diagnosis_note"] is None
+
+
+def test_planner_status_overrides_estimate() -> None:
+    base = F.build(REPORT, RECORDS, TODAY)
+    assert base["premium"]["paying_now"] == 200000  # C1 estimated paid up
+    f = F.build(REPORT, RECORDS, TODAY, overrides={"3": "stopped", "1": "paying"})
+    c = {x["no"]: x for x in f["contracts"]}
+    assert not c[1]["paid_up_likely"] and c[1]["status_label"] == "설계사 확인: 납입 중"
+    assert c[3]["paid_up_likely"] and c[3]["coverage_uncertain"] and c[3]["active"]
+    assert f["premium"]["paying_now"] == 300000 - 50000 and f["premium"]["uncertain_coverage"] == ["C3"]
+    assert "상해수술" in f["coverage_by_category"]  # stopped: coverage kept (flagged), not dropped
+    t = F.build(REPORT, RECORDS, TODAY, overrides={"3": "terminated"})
+    assert "상해수술" not in t["coverage_by_category"]  # 해지: coverage gone too
+    p = plan.premium_plan(t, plan.sanitize(_analysis(), t)[0])
+    assert p["paid_up"] == 100000 + 50000 and p["paid_up_estimated"] == 100000  # only C1 is still an estimate

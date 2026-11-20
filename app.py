@@ -537,7 +537,8 @@ async def _run_coverage(user: dict, row: dict, raw: bytes) -> None:
     def progress(p: dict) -> None:
         _cov_progress(rid, p)
     try:
-        res = await asyncio.to_thread(cov_service.run, raw, user_id=uid, rep=row.get("extract"), progress=progress)
+        res = await asyncio.to_thread(cov_service.run, raw, user_id=uid, rep=row.get("extract"), progress=progress,
+                                      overrides=row.get("overrides") or {})
         _cov_progress(rid, {"stage": 4, "label": "결과 저장 중"})
         base = row["storage_path"].rsplit("/", 1)[0]
         results = []
@@ -587,6 +588,50 @@ async def _coverage_as_medical(user: dict, row: dict, raw: bytes) -> None:
             pass
     finally:
         _COV_ACTIVE.pop(rid, None)
+
+
+@app.get("/api/coverage/{report_id}/contracts")
+async def coverage_contracts(report_id: int, x_pick3_token: Optional[str] = Header(default=None)) -> dict:
+    """Contracts read from the report with Pick3's payment-status estimate and the planner's confirmed status."""
+    from coverage_review import facts as cov_facts
+    from datetime import date as _date
+    user = await _current_user(x_pick3_token)
+    try:
+        row = await cov_store.get(user["id"], report_id)
+    except cov_store.StoreError as exc:
+        raise _store_failed(exc)
+    if not row:
+        raise HTTPException(status_code=404, detail="보고서가 없습니다.")
+    if not row.get("extract"):
+        return {"contracts": [], "message": "먼저 [제안서 작성]으로 보고서를 읽어 주세요."}
+    rules = cov_facts.load_rules()
+    est = cov_facts.contract_facts(row["extract"], _date.today(), rules)
+    ov = row.get("overrides") or {}
+    return {"statuses": cov_facts.STATUS, "contracts": [
+        {"no": c["no"], "insurer": c["insurer"], "product": c["product"], "type": c["type"], "premium": c["premium"],
+         "pay_cycle": c["pay_cycle"], "paid_count": c["paid_count"], "start": c["start"], "end": c["end"],
+         "estimate": "paid_up" if c["paid_up_likely"] else "paying", "estimate_basis": c.get("paid_up_basis"),
+         "status": ov.get(str(c["no"]), "auto")} for c in est]}
+
+
+class CoverageOverrides(BaseModel):
+    overrides: dict[str, str]
+
+
+@app.put("/api/coverage/{report_id}/overrides")
+async def coverage_overrides(report_id: int, body: CoverageOverrides,
+                             x_pick3_token: Optional[str] = Header(default=None)) -> dict:
+    """Save the planner's contract statuses ("auto" = keep Pick3's estimate). Takes effect on the next run."""
+    from coverage_review import facts as cov_facts
+    user = await _current_user(x_pick3_token)
+    clean = {str(int(k)): v for k, v in body.overrides.items() if v in cov_facts.STATUS and str(k).isdigit()}
+    try:
+        if not await cov_store.get(user["id"], report_id):
+            raise HTTPException(status_code=404, detail="보고서가 없습니다.")
+        await cov_store.update(user["id"], report_id, overrides=clean)
+    except cov_store.StoreError as exc:
+        raise _store_failed(exc)
+    return {"ok": True, "overrides": clean}
 
 
 @app.get("/api/coverage/{report_id}/files/{index}")

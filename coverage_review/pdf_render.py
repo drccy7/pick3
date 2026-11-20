@@ -215,7 +215,7 @@ def analysis_pdf(facts: dict, analysis: dict, plan: dict, warnings: list[str]) -
     pts = [P(e(k), s.li) for k in a.get("key_points", [])]
     li = f"<b>보험료</b>: 보고서상 월 {won(p['stated'] or p['base'])}원"
     if p["paid_up"]:
-        li += f" 중 납입완료 추정 {won(p['paid_up'])}원 제외 시 {won(p['paying_now'])}원"
+        li += f" 중 납입하지 않는 계약 {won(p['paid_up'])}원 제외 시 {won(p['paying_now'])}원"
     li += (f". 정리 후 {won(p['after_opt'])}원 + 보강 약 {won(p['add_mid'])}원 = <b>종합 약 {won(p['total_mid'])}원</b>"
            f"(범위 {won(p['total_min'])}~{won(p['total_max'])}).")
     for x in pts:
@@ -236,8 +236,8 @@ def analysis_pdf(facts: dict, analysis: dict, plan: dict, warnings: list[str]) -
     rows = [[P("No", s.th), P("보험사 · 상품", s.th), P("기간", s.th), P("1회 보험료", s.thn), P("주요 담보", s.th)]]
     for k in f["contracts"]:
         period = f"{e(k.get('start') or '')}~{e(k.get('end') or '종신')}"
-        if k.get("paid_up_likely"):
-            period += f'<br/><font color="#b33a12"><b>납입완료 추정 {e(k.get("paid_up_month"))}</b></font>'
+        if k.get("status_label"):
+            period += f'<br/><font color="#b33a12"><b>{e(k.get("status_label"))}</b></font>'
         prem = won(k.get("premium")) + ("" if k.get("pay_cycle") == "월납" else f"<br/>({e(k.get('pay_cycle'))})")
         rows.append([P(e(k.get("no")), s.td), P(f"{e(k.get('insurer'))}<br/>{e(k.get('product'))}", s.td),
                      P(period, s.td), P(prem, s.tdn), P(e(topcov(k.get("coverages") or [])), s.td)])
@@ -317,12 +317,12 @@ def analysis_pdf(facts: dict, analysis: dict, plan: dict, warnings: list[str]) -
                       "실제 견적으로 바꿔 넣는다. 감액 절감액은 특약별 보험료 확인 전이라 합계에 넣지 않았다.", s.body)],
                    W, WARN_BG, WARN_LINE))
     if f["premium"].get("paid_up_likely"):
-        h3("5-1. 납입완료 추정 계약")
+        h3("5-1. 지금 납입하지 않는 계약")
         rows = [[P("계약", s.th), P("월 보험료", s.thn), P("근거", s.th)]]
         for x in f["premium"]["paid_up_likely"]:
             rows.append([P(e(x.get("label")), s.td), P(won(x.get("monthly")), s.tdn),
-                         P(f"{e(x.get('basis'))} → {e(x.get('month'))} 완료 추정", s.td)])
-        rows.append([P("<b>실제 납입 중(추정)</b>", s.td), P(f"<b>{won(p['paying_now'])}</b>", s.tdn),
+                         P(f"{e(x.get('basis'))}" + (f" → {e(x.get('month'))} 완료 추정" if x.get("month") else ""), s.td)])
+        rows.append([P("<b>실제 납입 중</b>", s.td), P(f"<b>{won(p['paying_now'])}</b>", s.tdn),
                      P(f"{won(p['base'])} − {won(p['paid_up'])} (증권·자동이체로 확인)", s.td)])
         out.append(grid(rows, [0.45 * W, 22 * mm, W - 0.45 * W - 22 * mm]))
     h3("5-2. 최적화 — 중복·과잉 정리")
@@ -350,7 +350,7 @@ def analysis_pdf(facts: dict, analysis: dict, plan: dict, warnings: list[str]) -
                  for x in f["premium"].get("non_monthly", []))
     rows = [[P("단계", s.th), P("월 보험료", s.thn), P("설명", s.th)],
             [P("① 보고서상 현재", s.td), P(won(p["stated"] or p["base"]), s.tdn), P("월납 합계" + nm, s.td)],
-            [P("② 실제 납입 중", s.td), P(won(p["paying_now"]), s.tdn), P("납입완료 추정 제외", s.td)],
+            [P("② 실제 납입 중", s.td), P(won(p["paying_now"]), s.tdn), P("납입하지 않는 계약 제외", s.td)],
             [P("③ 최적화 후", s.td), P(won(p["after_opt"]), s.tdn),
              P(f"② − 정리 {won(p['removed'])}" + (" (감액 절감은 견적 후 추가)" if p["reductions"] else ""), s.td)],
             [P("④ 추가 권유", s.td), P(f"+ {won(p['add_mid'])}", s.tdn),
@@ -358,7 +358,7 @@ def analysis_pdf(facts: dict, analysis: dict, plan: dict, warnings: list[str]) -
             [P("<b>⑤ 종합(제안 후)</b>", s.td), P(f"<b>{won(p['total_mid'])}</b>", s.tdn),
              P(f"<b>범위 {won(p['total_min'])} ~ {won(p['total_max'])}</b>", s.td)]]
     out.append(grid(rows, [0.25 * W, 28 * mm, W - 0.25 * W - 28 * mm]))
-    if p["paid_up"]:
+    if p.get("paid_up_estimated"):
         out.append(P(f"※ 납입완료 추정이 틀리면 ⑤는 약 {won(p['total_if_not_paid_up'])}원.", s.small))
     h3("5-5. 보장 전후 비교")
     rows = [[P("담보", s.th), P("현재", s.thn), P("제안", s.thn), P("보고서 권장 · 판정", s.th)]]
@@ -566,7 +566,7 @@ def proposal_pdf(facts: dict, analysis: dict, plan: dict, warnings: list[str] | 
 
     h3("A. 보험료 전후 비교의 전제")
     rows = []
-    for x in f["premium"].get("paid_up_likely", []):
+    for x in [x for x in f["premium"].get("paid_up_likely", []) if not x.get("confirmed")]:
         rows.append([P(f"<b>{e(x.get('label'))} 납입완료 여부</b> ({e(x.get('basis'))})", ck.td),
                      P(f"아니면 합계 +{manwon(x.get('monthly'))}", ck.td), P("증권·자동이체 → ________", fill)])
     for x in p["reductions"]:

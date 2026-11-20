@@ -277,3 +277,29 @@ def test_encrypted_nhis_pdf_waits_on_the_medical_page_and_is_cleaned_up(monkeypa
     assert store.files == {}  # the health-data PDF is deleted once saved
     again = client.post(f"/api/coverage/{rid}/run", headers=AUTH, json={"password": "700101"}).json()
     assert not again["ok"] and "이미" in again["message"]
+
+
+def test_contract_status_api_and_rerun_uses_it(monkeypatch, store) -> None:
+    import app
+    _fake(monkeypatch, SCREEN)
+    monkeypatch.setattr(app.cov_service, "is_coverage_report", lambda raw: True)
+    rid = _share(_pdf("pw"))["report_id"]
+    store.rows[rid]["extract"] = {"customer": {"name": "홍길동"}, "contracts": [
+        {"no": 1, "insurer": "가생명", "product": "종신", "start": "2005-11", "pay_cycle": "월납", "premium": 100000,
+         "paid_count": 240, "type": "종신·정기", "coverages": []},
+        {"no": 2, "insurer": "나손보", "product": "가정종합", "start": "2023-07", "pay_cycle": "월납", "premium": 100000,
+         "paid_count": 40, "type": "화재·가정", "coverages": []}]}
+    d = client.get(f"/api/coverage/{rid}/contracts", headers=AUTH).json()
+    assert [c["estimate"] for c in d["contracts"]] == ["paid_up", "paying"] and d["statuses"]["stopped"].startswith("납입 안 함")
+    r = client.put(f"/api/coverage/{rid}/overrides", headers=AUTH, json={"overrides": {"2": "stopped", "1": "auto", "x": "paying"}})
+    assert r.json()["overrides"] == {"2": "stopped"}
+    assert client.get(f"/api/coverage/{rid}/contracts", headers=AUTH).json()["contracts"][1]["status"] == "stopped"
+    seen = {}
+    orig = app.cov_service.run
+
+    def spy(raw, **kw):
+        seen.update(kw)
+        return orig(raw, **kw)
+    monkeypatch.setattr(app.cov_service, "run", spy)
+    assert client.post(f"/api/coverage/{rid}/run", headers=AUTH, json={}).json()["ok"]
+    assert seen["overrides"] == {"2": "stopped"} and seen["rep"]["contracts"][1]["no"] == 2

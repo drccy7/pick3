@@ -71,7 +71,7 @@ table { font-size: 8.6pt; } th, td { padding: 1.2mm 1.8mm; }
 <div class="p2head"><h1>제안 전 확인 필수 사항</h1><span class="w">설계사용 · 고객에게는 1쪽만 전달</span></div>
 <h3>A. 보험료 전후 비교의 전제</h3>
 <table class="ck"><tr><th></th><th style="width:40%">확인할 것</th><th style="width:26%">영향</th><th>결과</th></tr>
-{% for x in f.premium.paid_up_likely %}<tr><td>□</td><td><b>{{ x.label }} 납입완료 여부</b> ({{ x.basis }})</td><td>아니면 합계 +{{ x.monthly|manwon }}</td><td class="fill">증권·자동이체 → ________</td></tr>{% endfor %}
+{% for x in f.premium.paid_up_likely if not x.confirmed %}<tr><td>□</td><td><b>{{ x.label }} 납입완료 여부</b> ({{ x.basis }})</td><td>아니면 합계 +{{ x.monthly|manwon }}</td><td class="fill">증권·자동이체 → ________</td></tr>{% endfor %}
 {% for x in p.reductions %}<tr><td>□</td><td><b>{{ x.no }}. {{ x.label }} 감액 시 절감액</b></td><td>{{ x.caution }}</td><td class="fill">특약별 보험료 → ________</td></tr>{% endfor %}
 {% for x in p.removals %}<tr><td>□</td><td><b>{{ x.no }}. {{ x.label }} 정리 동의</b></td><td>{{ x.caution }}</td><td class="fill">고객 동의 → ________</td></tr>{% endfor %}
 </table>

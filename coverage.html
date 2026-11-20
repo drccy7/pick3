@@ -56,6 +56,15 @@
     .bar { height: 8px; border-radius: 99px; background: var(--surface-2); margin-top: 8px; overflow: hidden; }
     .bar i { display: block; height: 100%; background: var(--accent); border-radius: 99px; transition: width .8s ease; }
     .pinfo { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--muted); margin-top: 6px; }
+    .stbtn { font: inherit; font-size: 13px; color: var(--muted); background: none; border: 0; padding: 8px 0 0; text-decoration: underline; }
+    .stpanel { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 8px; }
+    .stpanel .c { padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+    .stpanel .c .n { font-weight: 700; }
+    .stpanel .c .k { color: var(--muted); font-size: 12px; margin: 2px 0 5px; }
+    .stpanel select { font: inherit; font-size: 14px; color: var(--text); background: var(--surface-2);
+      border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; width: 100%; }
+    .stpanel select.set { border-color: var(--accent); }
+    .stpanel .hint { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
     .pdfrow { margin-top: 8px; }
     .pdfrow .pdflabel { width: 100%; color: var(--muted); font-size: 12px; }
     .pdfrow .file { font-size: 12.5px; padding: 5px 11px; background: transparent; }
@@ -150,6 +159,8 @@
           <button class="btn" type="submit">${(r.files || []).length ? "다시 작성" : "제안서 작성"}</button>
         </form><div class="err" data-err="${r.id}"></div>`}
         <div class="row">${files}${running ? "" : `<button class="del" type="button" data-id="${r.id}">삭제</button>`}</div>
+        ${!running && r.has_extract ? `<button class="stbtn" type="button" data-id="${r.id}">📝 계약 상태 확인</button>
+          <div class="stpanel" id="st-${r.id}" hidden></div>` : ""}
         ${pdfRow}
       </article>`;
     }
@@ -160,7 +171,7 @@
       const token = Pick3Account.getToken();
       if (!token) { $("state").innerHTML = '계정이 없습니다. <a href="./">홈</a>에서 들어가 주세요.'; return; }
       // Don't redraw while a password is being typed.
-      if (document.activeElement && document.activeElement.tagName === "INPUT") { timer = setTimeout(load, 3000); return; }
+      if (document.activeElement && ["INPUT", "SELECT"].includes(document.activeElement.tagName)) { timer = setTimeout(load, 3000); return; }
       let data;
       try {
         const res = await fetch(`${Pick3Account.API}/api/coverage`, { headers: { "X-Pick3-Token": token } });
@@ -236,6 +247,38 @@
       }
     }
 
+    // Planner-confirmed payment status per contract (e.g. a contract no longer paid), then re-run.
+    async function toggleStatus(id) {
+      const box = document.getElementById(`st-${id}`);
+      if (!box.hidden) { box.hidden = true; return; }
+      box.hidden = false; box.innerHTML = '<p class="hint">불러오는 중…</p>';
+      const res = await fetch(`${Pick3Account.API}/api/coverage/${id}/contracts`, { headers: { "X-Pick3-Token": Pick3Account.getToken() } }).catch(() => null);
+      const d = res && res.ok ? await res.json() : null;
+      if (!d || !d.contracts || !d.contracts.length) { box.innerHTML = `<p class="hint">${esc((d && d.message) || "불러오지 못했습니다.")}</p>`; return; }
+      const est = (c) => c.estimate === "paid_up" ? `납입 끝남 추정 (${c.estimate_basis || ""})` : "납입 중";
+      box.innerHTML = '<p class="hint">설계사가 아는 실제 상태로 고르세요. "자동"은 Pick3 추정을 씁니다.</p>' + d.contracts.map((c) => `
+        <div class="c"><div class="n">${c.no}. ${esc(c.insurer)} ${esc(c.product)}</div>
+          <div class="k">${c.premium ? won(c.premium) + (c.pay_cycle === "월납" ? "/월" : " " + esc(c.pay_cycle)) : "-"} · 납입 ${c.paid_count ?? "-"}회 · ${esc(c.start || "")}~${esc(c.end || "종신")} · Pick3 추정: ${esc(est(c))}</div>
+          <select data-no="${c.no}" class="${c.status !== "auto" ? "set" : ""}">
+            <option value="auto">자동 (Pick3 추정)</option>
+            ${Object.entries(d.statuses).map(([k, v]) => `<option value="${k}" ${c.status === k ? "selected" : ""}>${esc(v)}</option>`).join("")}
+          </select></div>`).join("") +
+        `<div class="row"><button class="btn stsave" type="button" data-id="${id}">저장하고 다시 작성</button></div>`;
+    }
+
+    async function saveStatus(id, btn) {
+      const overrides = {};
+      document.querySelectorAll(`#st-${id} select`).forEach((s) => { if (s.value !== "auto") overrides[s.dataset.no] = s.value; });
+      btn.disabled = true;
+      const h = { "Content-Type": "application/json", "X-Pick3-Token": Pick3Account.getToken() };
+      const put = await fetch(`${Pick3Account.API}/api/coverage/${id}/overrides`, { method: "PUT", headers: h, body: JSON.stringify({ overrides }) }).catch(() => null);
+      if (!put || !put.ok) { alert("저장하지 못했습니다. (DB에 계약 상태 칸이 없으면 migration 009 실행 필요)"); btn.disabled = false; return; }
+      const run = await fetch(`${Pick3Account.API}/api/coverage/${id}/run`, { method: "POST", headers: h, body: "{}" }).catch(() => null);
+      const d = run ? await run.json().catch(() => ({})) : {};
+      if (!d.ok) alert(d.message || "다시 작성을 시작하지 못했습니다.");
+      load();
+    }
+
     $("list").addEventListener("click", async (e) => {
       const f = e.target.closest(".file");
       if (f && f.dataset.name.endsWith(".pdf")) {  // PDFs are for sending: share the named file itself
@@ -258,6 +301,10 @@
         }
         return;
       }
+      const sb = e.target.closest(".stbtn");
+      if (sb) { await toggleStatus(sb.dataset.id); return; }
+      const ss = e.target.closest(".stsave");
+      if (ss) { await saveStatus(ss.dataset.id, ss); return; }
       const d = e.target.closest(".del");
       if (!d || !confirm("이 보고서와 만든 결과를 모두 지울까요?")) return;
       const res = await fetch(`${Pick3Account.API}/api/coverage/${d.dataset.id}`, {

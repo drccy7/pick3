@@ -10,7 +10,7 @@
 
 <div class="box"><b>핵심 요약</b><ul>
 {% for k in a.key_points %}<li>{{ k }}</li>{% endfor %}
-<li><b>보험료</b>: 보고서상 월 {{ (p.stated or p.base)|won }}원{% if p.paid_up %} 중 납입완료 추정 {{ p.paid_up|won }}원 제외 시 {{ p.paying_now|won }}원{% endif %}.
+<li><b>보험료</b>: 보고서상 월 {{ (p.stated or p.base)|won }}원{% if p.paid_up %} 중 납입하지 않는 계약 {{ p.paid_up|won }}원 제외 시 {{ p.paying_now|won }}원{% endif %}.
 정리 후 {{ p.after_opt|won }}원 + 보강 약 {{ p.add_mid|won }}원 = <b>종합 약 {{ p.total_mid|won }}원</b>(범위 {{ p.total_min|won }}~{{ p.total_max|won }}).</li>
 </ul></div>
 {% if warnings %}<div class="box warn small"><b>자동 점검</b><ul>{% for w in warnings %}<li>{{ w }}</li>{% endfor %}</ul></div>{% endif %}
@@ -18,7 +18,7 @@
 <h2>1. 보유 계약 ({{ f.contracts|length }}건, 월납 합계 {{ p.base|won }}원)</h2>
 <table><tr><th>No</th><th>보험사 · 상품</th><th>기간</th><th class="n">1회 보험료</th><th>주요 담보</th></tr>
 {% for k in f.contracts %}<tr><td>{{ k.no }}</td><td>{{ k.insurer }}<br>{{ k.product }}</td>
-<td>{{ k.start or '' }}~{{ k.end or '종신' }}{% if k.paid_up_likely %}<br><b class="r">납입완료 추정 {{ k.paid_up_month }}</b>{% endif %}</td>
+<td>{{ k.start or '' }}~{{ k.end or '종신' }}{% if k.status_label %}<br><b class="r">{{ k.status_label }}</b>{% endif %}</td>
 <td class="n">{{ k.premium|won }}{% if k.pay_cycle != '월납' %}<br>({{ k.pay_cycle }}){% endif %}</td>
 <td>{{ k.coverages|topcov }}</td></tr>{% endfor %}</table>
 {% if f.report.caveats %}<p class="small">보고서 유의사항: {{ f.report.caveats|join(' / ') }}</p>{% endif %}
@@ -52,10 +52,10 @@
 
 <h2 class="pb">5. 보험료 최적화 + 추가 권유 = 종합 보험료 (전후 비교)</h2>
 <div class="box warn">추가 보험료는 <b>설정표(rules.json)의 시장 참고 추정 범위</b>(보험나이 {{ p.age_for_table }}세 구간)다. 실제 견적으로 바꿔 넣는다. 감액 절감액은 특약별 보험료 확인 전이라 합계에 넣지 않았다.</div>
-{% if f.premium.paid_up_likely %}<h3>5-1. 납입완료 추정 계약</h3>
+{% if f.premium.paid_up_likely %}<h3>5-1. 지금 납입하지 않는 계약</h3>
 <table><tr><th>계약</th><th class="n">월 보험료</th><th>근거</th></tr>
-{% for x in f.premium.paid_up_likely %}<tr><td>{{ x.label }}</td><td class="n">{{ x.monthly|won }}</td><td>{{ x.basis }} → {{ x.month }} 완료 추정</td></tr>{% endfor %}
-<tr><td><b>실제 납입 중(추정)</b></td><td class="n"><b>{{ p.paying_now|won }}</b></td><td>{{ p.base|won }} − {{ p.paid_up|won }} (증권·자동이체로 확인)</td></tr></table>{% endif %}
+{% for x in f.premium.paid_up_likely %}<tr><td>{{ x.label }}</td><td class="n">{{ x.monthly|won }}</td><td>{{ x.basis }}{% if x.month %} → {{ x.month }} 완료 추정{% endif %}</td></tr>{% endfor %}
+<tr><td><b>실제 납입 중</b></td><td class="n"><b>{{ p.paying_now|won }}</b></td><td>{{ p.base|won }} − {{ p.paid_up|won }} (증권·자동이체로 확인)</td></tr></table>{% endif %}
 <h3>5-2. 최적화 — 중복·과잉 정리</h3>
 <table><tr><th>구분</th><th>계약</th><th class="n">월 보험료</th><th>이유</th><th>잃는 보장 · 주의</th></tr>
 {% for x in p.removals %}<tr><td><span class="tag ok">정리</span></td><td>{{ x.no }}. {{ x.label }}</td><td class="n">−{{ x.monthly|won }}</td><td>{{ x.reason }}</td><td>{{ x.caution }}</td></tr>{% endfor %}
@@ -69,11 +69,11 @@
 <h3>5-4. 종합 보험료 전후 비교 (월)</h3>
 <table><tr><th>단계</th><th class="n">월 보험료</th><th>설명</th></tr>
 <tr><td>① 보고서상 현재</td><td class="n">{{ (p.stated or p.base)|won }}</td><td>월납 합계{% for x in f.premium.non_monthly %} · {{ x.id }} {{ x.cycle }} {{ x.premium|won }}원 별도{% endfor %}</td></tr>
-<tr><td>② 실제 납입 중</td><td class="n">{{ p.paying_now|won }}</td><td>납입완료 추정 제외</td></tr>
+<tr><td>② 실제 납입 중</td><td class="n">{{ p.paying_now|won }}</td><td>납입하지 않는 계약 제외</td></tr>
 <tr><td>③ 최적화 후</td><td class="n">{{ p.after_opt|won }}</td><td>② − 정리 {{ p.removed|won }}{% if p.reductions %} (감액 절감은 견적 후 추가){% endif %}</td></tr>
 <tr><td>④ 추가 권유</td><td class="n">+ {{ p.add_mid|won }}</td><td>범위 {{ p.add_min|won }} ~ {{ p.add_max|won }}</td></tr>
 <tr><td><b>⑤ 종합(제안 후)</b></td><td class="n"><b>{{ p.total_mid|won }}</b></td><td><b>범위 {{ p.total_min|won }} ~ {{ p.total_max|won }}</b></td></tr></table>
-{% if p.paid_up %}<p class="small">※ 납입완료 추정이 틀리면 ⑤는 약 {{ p.total_if_not_paid_up|won }}원.</p>{% endif %}
+{% if p.paid_up_estimated %}<p class="small">※ 납입완료 추정이 틀리면 ⑤는 약 {{ p.total_if_not_paid_up|won }}원.</p>{% endif %}
 <h3>5-5. 보장 전후 비교</h3>
 <table><tr><th>담보</th><th class="n">현재</th><th class="n">제안</th><th>보고서 권장 · 판정</th></tr>
 {% for g in a.gaps %}{% set pr = prod[g.product_key] %}<tr><td>{{ pr.label }}</td><td class="n">{{ pr.current_amount|man }}</td><td class="n">{{ pr.proposal }}</td>

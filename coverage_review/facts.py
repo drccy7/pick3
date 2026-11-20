@@ -91,7 +91,28 @@ def age_info(birth: date | None, today: date) -> dict:
 _PER_MONTH = {"월납": 1, "3개월납": 3, "6개월납": 6, "연납": 12}
 
 
-def contract_facts(report: dict, today: date, rules: dict) -> list[dict]:
+# Planner-confirmed payment status (pick3_coverage_reports.overrides). Anything but "paying" leaves the
+# monthly total; "terminated" also drops the coverage; "stopped" keeps it but flags it as uncertain.
+STATUS = {"paying": "납입 중", "paid_up": "납입 끝남(완납)", "stopped": "납입 안 함(해지/유예/완납 미확인)",
+          "suspended": "납입 유예", "terminated": "해지"}
+
+
+def _apply_override(f: dict, status: str) -> None:
+    f["status"], f["status_confirmed"] = status, True
+    f["status_label"] = f"설계사 확인: {STATUS[status]}"
+    if status == "paying":
+        f["paid_up_likely"], f["paid_up_month"] = False, None
+        f.pop("paid_up_basis", None)
+        return
+    f["paid_up_likely"], f["paid_up_month"] = True, None  # "not paying now" (kept name for the documents)
+    f["paid_up_basis"] = f["status_label"]
+    if status == "terminated":
+        f["active"] = False
+    if status == "stopped":
+        f["coverage_uncertain"] = True  # 해지라면 보장도 없음 - 유지 여부 확인 필요
+
+
+def contract_facts(report: dict, today: date, rules: dict, overrides: dict | None = None) -> list[dict]:
     out = []
     t_idx = today.year * 12 + today.month - 1
     for c in report.get("contracts", []):
@@ -116,6 +137,12 @@ def contract_facts(report: dict, today: date, rules: dict) -> list[dict]:
                 f["paid_up_likely"] = True
                 f["paid_up_month"] = ym_str(ym_index(start) + (paid - 1) * step)
                 f["paid_up_basis"] = f"납입 {paid}회 = {paid * step // 12}년납, 경과로는 {due}회째"
+        f["status"] = "paid_up" if f["paid_up_likely"] else "paying"
+        f["status_confirmed"] = False
+        f["status_label"] = f"납입완료 추정 {f['paid_up_month']}" if f["paid_up_likely"] else ""
+        ov = (overrides or {}).get(str(c["no"]))
+        if ov in STATUS:
+            _apply_override(f, ov)
         out.append(f)
     return out
 
@@ -352,12 +379,13 @@ def _range_for_age(product: dict, age: int | None) -> dict:
     return {"min": product["premium"][-1]["min"], "max": product["premium"][-1]["max"]}
 
 
-def build(report: dict, records: list[dict], today: date, rules: dict | None = None) -> dict:
+def build(report: dict, records: list[dict], today: date, rules: dict | None = None,
+          overrides: dict | None = None) -> dict:
     rules = rules or load_rules()
     cust = report.get("customer", {})
     birth = parse_date(cust.get("birth_date"))
     age = age_info(birth, today)
-    contracts = contract_facts(report, today, rules)
+    contracts = contract_facts(report, today, rules, overrides)
     cov = coverage_by_category(contracts)
     periods = indemnity_periods(contracts)
     recs = normalize_records(records, rules)
@@ -423,7 +451,9 @@ def build(report: dict, records: list[dict], today: date, rules: dict | None = N
         "premium": {"monthly_sum": monthly_sum, "stated_monthly": stated,
                     "matches_stated": stated is None or abs(monthly_sum - stated) < 10,
                     "paid_up_likely": [{"id": c["id"], "label": f"{c['no']}. {c['insurer']} {c['product']}", "monthly": c["monthly_equiv"], "month": c["paid_up_month"],
-                                        "basis": c.get("paid_up_basis")} for c in paid_up],
+                                        "basis": c.get("paid_up_basis"), "confirmed": c.get("status_confirmed", False),
+                                        "status": c.get("status")} for c in paid_up],
+                    "uncertain_coverage": [c["id"] for c in contracts if c.get("coverage_uncertain")],
                     "paying_now": monthly_sum - sum(c["monthly_equiv"] for c in paid_up if c["pay_cycle"] == "월납"),
                     "non_monthly": [{"id": c["id"], "cycle": c["pay_cycle"], "premium": c["premium"]}
                                     for c in contracts if c["pay_cycle"] not in ("월납",) and c["premium"]]},

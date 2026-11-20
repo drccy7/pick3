@@ -152,6 +152,9 @@ ANALYZE_PROMPT = """당신은 보험 설계사를 돕는 분석가입니다. 아
 4. cautions: 이 고객에 해당하는 알릴의무(정기 진료·최근 진료), 면책·감액, 기존계약 해지 시 비교안내 등.
 5. strengths: 고객이 이미 잘 갖춘 보장(고객용 짧은 문장).
 
+facts.contracts 의 status/status_label 은 납입 상태입니다(status_confirmed=true 는 설계사가 확인한 값).
+coverage_uncertain=true 인 계약(해지·유예·완납 미확인)은 보장이 남아 있는지 확인이 필요하다고 cautions 에 적고,
+그 계약의 담보를 '충분한 보장'의 근거로 쓰지 마세요.
 facts.diagnoses(D1, D2…)가 있으면 건강보험 요양급여내역의 상병코드입니다(의증·배제상병 포함 가능, 확진 아님).
 - claims: 진단명이 진단비·수술비·입원일당 담보와 맞으면 근거로 쓰되 "가능성 있음 → 진단서·수술확인서로 확인"으로.
 - cautions: 최근 3개월·5년 이내 진단(within_3_months, within_5_years)과 장기 투약(max_supply_days)은

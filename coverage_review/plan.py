@@ -99,5 +99,7 @@ def premium_plan(facts: dict, analysis: dict, rules: dict | None = None) -> dict
         "removals": removals, "removed": removed, "reductions": reductions, "after_opt": after_opt,
         "adds": adds, "add_min": add_min, "add_max": add_max, "add_mid": add_mid,
         "total_mid": after_opt + add_mid, "total_min": after_opt + add_min, "total_max": after_opt + add_max,
-        "total_if_not_paid_up": after_opt + paid_up + add_mid, "age_for_table": age,
+        "paid_up_estimated": sum(x["monthly"] for x in p["paid_up_likely"] if not x.get("confirmed")),
+        "total_if_not_paid_up": after_opt + sum(x["monthly"] for x in p["paid_up_likely"] if not x.get("confirmed"))
+        + add_mid, "age_for_table": age,
     }
